@@ -45,7 +45,7 @@ android {
         create("release") {
             storeFile = file("release.jks")
             storePassword = "123456"
-            keyAlias = "antigem"
+            keyAlias = "jutiagent"
             keyPassword = "123456"
         }
     }
@@ -95,7 +95,7 @@ android {
     }
 
     base {
-        archivesName.set("antiGem")
+        archivesName.set("JutiAgent")
     }
 
     compileOptions {
