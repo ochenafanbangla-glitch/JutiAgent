@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/readme/icon.svg" alt="AntiGem app icon" width="112">
+<img src="docs/readme/icon.svg" alt="JutiAgent app icon" width="112">
 
-# AntiGem
+# JutiAgent
 
 *A gem that defies gravity. A full coding environment, light enough to carry in your pocket.*
 
