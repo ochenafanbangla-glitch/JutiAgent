@@ -4,7 +4,7 @@
   "min_supported_version_code": 1,
   "changelog": [
     "Added support for uploading image in chat using camera",
-    "Added antigem mini app support to create app and install inside antigem or share to other(in beta state)"
+    "Added antigem mini app support to create app and install inside JutiAgent or share to other(in beta state)"
   ],
   "is_critical": false
 }
