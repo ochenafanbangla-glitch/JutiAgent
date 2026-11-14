@@ -147,7 +147,7 @@ object JarvisEvents {
     private fun handling(owner: String, events: List<Event>): String = buildString {
         val voice = owner == JarvisManagers.VOICE
         val kinds = events.map { it.kind }.toSet()
-        append("These are automatic messages from the AntiGem app about work YOU delegated; they are not the user's words. ")
+        append("These are automatic messages from the JutiAgent app about work YOU delegated; they are not the user's words. ")
         append("Each <event> is separate: read every <task_reply> as that sub-agent's own report.\n")
         if (voice) append("- Tell the user with ONE jarvis_speak covering all events together (one or two short spoken sentences), not one call per event.\n")
         else append("- Write the user a short update in this chat (a line per event, plain and concrete).\n")
