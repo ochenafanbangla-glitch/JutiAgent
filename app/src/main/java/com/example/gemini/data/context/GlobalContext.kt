@@ -113,9 +113,12 @@ object GlobalContext {
 
     /** The built-in context for the current setup (Settings shows exactly this). [h]: the heading level of its sections. */
     fun builtInText(h: String = "##"): String = buildString {
+        append("$h The app you run in\n")
+        append("- This app is **JutiAgent**. If the user asks what this app is called, say JutiAgent.\n")
+        append("- JutiAgent was created by **RANJIT BHAI**. If the user asks who created or made this app, or who created you, say: RANJIT BHAI.\n\n")
         if (runsInTermux) {
             append("$h Where you run\n")
-            append("- Android, inside Termux (the AntiGem app): no root, no sudo; /tmp, /usr, /etc are not usable.\n")
+            append("- Android, inside Termux (the JutiAgent app): no root, no sudo; /tmp, /usr, /etc are not usable.\n")
             append("- Temporary files: use \$TMPDIR ($filesDir/usr/tmp), never /tmp. Install packages with `pkg install <name>`.\n")
             append("- Home is \$HOME ($filesDir/home); phone storage is /sdcard.\n\n")
         }
@@ -168,9 +171,9 @@ object GlobalContext {
             if (sendFirst) {
                 append(
                     when {
-                        !hasEarlierMessages -> "[AntiGem app context: from the app the user chats through, not written by the user. Follow it for this whole chat; it is not repeated.]"
-                        known != null -> "[AntiGem app context, updated: it replaces the earlier copy in this chat. Follow it from now on.]"
-                        else -> "[AntiGem app context: from the app the user chats through. Follow it from now on in this chat.]"
+                        !hasEarlierMessages -> "[JutiAgent app context: from the app the user chats through, not written by the user. Follow it for this whole chat; it is not repeated.]"
+                        known != null -> "[JutiAgent app context, updated: it replaces the earlier copy in this chat. Follow it from now on.]"
+                        else -> "[JutiAgent app context: from the app the user chats through. Follow it from now on in this chat.]"
                     }
                 ).append("\n\n").append(first)
             }
@@ -214,7 +217,7 @@ object GlobalContext {
     /** A section of the Jarvis guide (first message of a Jarvis chat): the built-in context and the user's Jarvis-enabled first-message entries. */
     fun jarvisGuideSection(): String? {
         val parts = mutableListOf<String>()
-        if (_builtInEnabled.value) parts += "## AntiGem app context (for you and every chat you start)\n" + builtInText("###")
+        if (_builtInEnabled.value) parts += "## JutiAgent app context (for you and every chat you start)\n" + builtInText("###")
         val own = active().filter { it.forJarvis && !it.everyMessage }
         if (own.isNotEmpty()) parts += "## The user's own instructions\n$JARVIS_PRIORITY\n\n" + entriesBlock(own)
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
@@ -235,7 +238,7 @@ object GlobalContext {
     /** The context for a chat Jarvis starts for a task: the built-in context and the user's Jarvis-enabled entries. */
     fun taskBody(): String? {
         val parts = mutableListOf<String>()
-        if (_builtInEnabled.value) parts += "[AntiGem app context: from the app, not the user. Follow it for this whole chat.]\n\n" + builtInText()
+        if (_builtInEnabled.value) parts += "[JutiAgent app context: from the app, not the user. Follow it for this whole chat.]\n\n" + builtInText()
         val own = active().filter { it.forJarvis }
         if (own.isNotEmpty()) parts += "## The user's own instructions\n" + entriesBlock(own)
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
