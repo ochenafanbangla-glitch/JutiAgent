@@ -1,10 +1,10 @@
 {
-  "version_code": 129,
-  "version_name": "1.2.0",
+  "version_code": 130,
+  "version_name": "1.2.1",
   "min_supported_version_code": 1,
   "changelog": [
-    "Added support for uploading image in chat using camera",
-    "Added antigem mini app support to create app and install inside JutiAgent or share to other(in beta state)"
+    "The app is now JutiAgent",
+    "Created by RANJIT BHAI"
   ],
   "is_critical": false
 }
