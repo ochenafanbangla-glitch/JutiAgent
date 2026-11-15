@@ -36,7 +36,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -804,10 +803,6 @@ fun BrowserScreen(
                 if (activeTab != null && hasActivePage) sessionManager.reloadTab(activeTab.id)
             },
             onToggleDesktop = { sessionManager.toggleDesktopMode(activeTab, context) },
-            onOpenInChrome = {
-                val url = activeTab?.url
-                if (hasActivePage && !url.isNullOrBlank()) openInChrome(context, url)
-            },
             onToggleDevTools = {
                 if (activeTab != null) {
                     val wv = activeTab.webView ?: sessionManager.ensureWebViewAttached(context, activeTab, isDarkTheme)
@@ -886,27 +881,6 @@ fun BrowserScreen(
     }
 }
 
-/** Open [url] in Chrome, where the user's Google accounts are already signed in; falls back to any browser. */
-private fun openInChrome(context: android.content.Context, url: String) {
-    val chromeIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).apply {
-        setPackage("com.android.chrome")
-        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-    }
-    try {
-        context.startActivity(chromeIntent)
-    } catch (_: Exception) {
-        try {
-            context.startActivity(
-                android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).apply {
-                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-            )
-        } catch (_: Exception) {
-            android.widget.Toast.makeText(context, "No browser app found", android.widget.Toast.LENGTH_SHORT).show()
-        }
-    }
-}
-
 /** Host shown in the resting address pill ("github.com", "localhost:8080"); falls back to the raw URL. */
 private fun browserDisplayHost(url: String): String {
     val uri = try { android.net.Uri.parse(url) } catch (_: Exception) { null }
@@ -953,7 +927,6 @@ private fun BrowserMenuSheet(
     onReload: () -> Unit,
     onToggleDesktop: () -> Unit,
     onToggleDevTools: () -> Unit,
-    onOpenInChrome: () -> Unit,
     onClearTabCache: () -> Unit,
     onClearBrowsingData: () -> Unit,
     onCloseBrowser: () -> Unit
@@ -1077,23 +1050,6 @@ private fun BrowserMenuSheet(
             }
 
             Spacer(modifier = Modifier.height(16.dp))
-
-            if (hasActivePage) {
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = groupColor,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    BrowserMenuRow(
-                        icon = Icons.AutoMirrored.Outlined.OpenInNew,
-                        title = "Open in Chrome",
-                        subtitle = "For sign-in: Chrome is already signed in with your accounts",
-                        onClick = { closeThen(onOpenInChrome) }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-            }
 
             Surface(
                 shape = RoundedCornerShape(18.dp),
