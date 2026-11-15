@@ -1,9 +1,9 @@
 {
-  "version_code": 131,
-  "version_name": "1.2.2",
+  "version_code": 132,
+  "version_name": "1.2.3",
   "min_supported_version_code": 1,
   "changelog": [
-    "Built-in browser: Open in Chrome option — sign-in pages open in Chrome, already signed in",
+    "Built-in browser: sign in directly inside the app browser",
     "Created by RANJIT BHAI"
   ],
   "is_critical": false
