@@ -1,9 +1,11 @@
 {
-  "version_code": 132,
-  "version_name": "1.2.3",
+  "version_code": 133,
+  "version_name": "1.2.4",
   "min_supported_version_code": 1,
   "changelog": [
-    "Built-in browser: sign in directly inside the app browser",
+    "Project checkpoints: snapshot your project while the agent works and restore it anytime",
+    "STEM & diagrams rendering in chat: math, chemistry notation and figures",
+    "Video player now plays m3u8 streams",
     "Created by RANJIT BHAI"
   ],
   "is_critical": false
