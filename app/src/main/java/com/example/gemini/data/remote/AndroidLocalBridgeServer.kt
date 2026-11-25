@@ -34,6 +34,7 @@ class AndroidLocalBridgeServer private constructor() {
         NOTES("notes_mcp"),
         JARVIS("jarvis_mcp"),
         THEME("theme_mcp"),
+        LANGUAGE("language_mcp"),
         MINI_APP_DEVELOPER("mini_app_developer_mcp")
     }
 
@@ -45,13 +46,14 @@ class AndroidLocalBridgeServer private constructor() {
         const val NOTES_MCP_NAME = "notes_mcp"
         const val JARVIS_MCP_NAME = "jarvis_mcp"
         const val THEME_MCP_NAME = "theme_mcp"
+        const val LANGUAGE_MCP_NAME = "language_mcp"
         const val MINI_APP_DEVELOPER_MCP_NAME = "mini_app_developer_mcp"
         fun isDeveloperMcpName(name: String) = name == DEVELOPER_MCP_NAME || name == LEGACY_DEVELOPER_MCP_NAME
         private const val TAG = "AndroidBridgeServer"
         private const val MAX_HEADER_BYTES = 64 * 1024
         /** Uploads arrive as base64 in JSON: allow large bodies, but not unbounded ones. */
         private const val MAX_BODY_BYTES = 512L * 1024 * 1024
-        /** Per app (build flavor) so com.antigem and com.termux do not collide. */
+        /** Differs from the old com.termux build's port so both apps can run together. */
         val DEFAULT_PORT = com.example.gemini.BuildConfig.BROWSER_MCP_PORT
         val instance: AndroidLocalBridgeServer by lazy { AndroidLocalBridgeServer() }
     }
@@ -99,6 +101,8 @@ class AndroidLocalBridgeServer private constructor() {
                 Log.i(TAG, "Bridge MCP / REST Server running on http://127.0.0.1:$boundPort")
                 // a server (Remote mode) reaches this MCP server through an SSH reverse tunnel: point it at the bound port
                 com.example.gemini.data.remote.RemoteServerManager.resyncTunnels()
+                // rish reads the port from a file: rewrite it when it isn't the default one
+                appContext?.let { ctx -> runCatching { com.example.gemini.data.adb.DeviceAccess.ensureTerminalCommands(ctx) } }
 
                 while (isRunning && !serverSocket!!.isClosed) {
                     val client = serverSocket!!.accept()
@@ -123,8 +127,8 @@ class AndroidLocalBridgeServer private constructor() {
         Log.i(TAG, "Bridge Server stopped")
     }
 
-    /** One HTTP/1.1 request; [body] is the raw body bytes decoded as UTF-8. */
-    private class HttpRequest(val method: String, val rawPath: String, val headers: Map<String, String>, val body: String)
+    /** One HTTP/1.1 request; [body] is the raw body bytes decoded as UTF-8, [bytes] the raw body itself. */
+    private class HttpRequest(val method: String, val rawPath: String, val headers: Map<String, String>, val body: String, val bytes: ByteArray)
 
     /** Remembers whether anything was written, so a failure after a response never writes a second one. */
     private class TrackingOutputStream(private val out: OutputStream) : OutputStream() {
@@ -172,7 +176,7 @@ class AndroidLocalBridgeServer private constructor() {
                 readExactly(input, length.toInt())
             }
         }
-        return HttpRequest(requestLine[0].uppercase(), requestLine[1], headers, String(bodyBytes, Charsets.UTF_8))
+        return HttpRequest(requestLine[0].uppercase(), requestLine[1], headers, String(bodyBytes, Charsets.UTF_8), bodyBytes)
     }
 
     private fun readExactly(input: InputStream, length: Int): ByteArray {
@@ -263,6 +267,7 @@ class AndroidLocalBridgeServer private constructor() {
                     path == "/notes" -> handleMcpHttp(McpEndpoint.NOTES, method, body, out)
                     path == "/jarvis" -> handleMcpHttp(McpEndpoint.JARVIS, method, body, out, headers["mcp-session-id"])
                     path == "/theme" -> handleMcpHttp(McpEndpoint.THEME, method, body, out)
+                    path == "/language" -> handleMcpHttp(McpEndpoint.LANGUAGE, method, body, out)
                     path == "/mini_app_developer" -> handleMcpHttp(McpEndpoint.MINI_APP_DEVELOPER, method, body, out)
                     path == "/api/health" -> {
                         val res = JSONObject().apply {
@@ -279,6 +284,9 @@ class AndroidLocalBridgeServer private constructor() {
                     path.startsWith("/api/terminal/") -> {
                         handleTerminalRest(path.removePrefix("/api/terminal/"), method, body, queryString, out)
                     }
+                    // the terminal's rish (Shizuku) and android-su (root): output streamed back, exit code fetched after
+                    path == "/api/device/exec" && method == "POST" -> com.example.gemini.data.adb.DeviceAccess.serveExec(headers, req.bytes, input, out)
+                    path == "/api/device/exit" -> com.example.gemini.data.adb.DeviceAccess.serveExit(queryString, out)
                     else -> {
                         sendResponse(out, 404, "application/json", "{\"error\": \"Not Found\"}")
                     }
@@ -460,8 +468,9 @@ class AndroidLocalBridgeServer private constructor() {
                     if (endpoint == McpEndpoint.NOTES) put("instructions", com.example.gemini.data.notes.NotesMcp.INSTRUCTIONS)
                     if (endpoint == McpEndpoint.JARVIS) put("instructions", com.example.gemini.data.jarvis.JarvisMcp.INSTRUCTIONS)
                     if (endpoint == McpEndpoint.THEME) put("instructions", com.example.gemini.theme.ThemeMcp.INSTRUCTIONS)
+                    if (endpoint == McpEndpoint.LANGUAGE) put("instructions", com.example.gemini.i18n.LanguageMcp.INSTRUCTIONS)
                     if (endpoint == McpEndpoint.MINI_APP_DEVELOPER) put("instructions", com.example.gemini.ui.miniapps.MiniAppDevMcp.INSTRUCTIONS)
-                    if (endpoint == McpEndpoint.BROWSER) put("instructions", com.example.gemini.ui.browser.mcp.BrowserMcp.INSTRUCTIONS)
+                    if (endpoint == McpEndpoint.BROWSER) put("instructions", com.example.gemini.ui.browser.mcp.BrowserMcp.INSTRUCTIONS + (appContext?.let { com.example.gemini.data.rea.ReaManager.browserMcpNote(it) } ?: ""))
                     if (endpoint == McpEndpoint.EXTENSION_DEVELOPER) put("instructions", "Start with webview_extension_docs. Read developer-mcp.md and the required API references, create a draft, write files, install or update, discover tools with webview_extension_test, and inspect logs to fix failures. No app source or manual ZIP handling is needed.")
                     put("capabilities", JSONObject().apply {
                         put("tools", JSONObject())
@@ -514,6 +523,7 @@ class AndroidLocalBridgeServer private constructor() {
         if (endpoint == McpEndpoint.NOTES) return com.example.gemini.data.notes.NotesMcp.tools()
         if (endpoint == McpEndpoint.JARVIS) return com.example.gemini.data.jarvis.JarvisMcp.tools()
         if (endpoint == McpEndpoint.THEME) return com.example.gemini.theme.ThemeMcp.tools()
+        if (endpoint == McpEndpoint.LANGUAGE) return com.example.gemini.i18n.LanguageMcp.tools()
         if (endpoint == McpEndpoint.MINI_APP_DEVELOPER) return com.example.gemini.ui.miniapps.MiniAppDevMcp.tools()
         if (endpoint == McpEndpoint.BROWSER) return com.example.gemini.ui.browser.mcp.BrowserMcp.tools()
         val tools = JSONArray()
@@ -625,6 +635,7 @@ class AndroidLocalBridgeServer private constructor() {
         if (toolName.startsWith("notes_")) return com.example.gemini.data.notes.NotesMcp.call(appContext!!, toolName, args)
         if (toolName.startsWith("jarvis_")) return com.example.gemini.data.jarvis.JarvisMcp.call(appContext!!, toolName, args)
         if (toolName.startsWith("theme_")) return com.example.gemini.theme.ThemeMcp.call(toolName, args)
+        if (toolName.startsWith("language_")) return com.example.gemini.i18n.LanguageMcp.call(toolName, args)
         if (toolName.startsWith("miniapp_")) return com.example.gemini.ui.miniapps.MiniAppDevMcp.call(appContext!!, toolName, args)
         if (toolName.startsWith("browser_")) return com.example.gemini.ui.browser.mcp.BrowserMcp.call(appContext!!, toolName, args)
 
