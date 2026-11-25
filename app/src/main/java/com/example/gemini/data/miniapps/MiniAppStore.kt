@@ -11,6 +11,7 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import com.example.gemini.i18n.L
 
 /**
  * "Get apps": a catalog of signed mini app packages hosted on GitHub (antigem-mini-apps.json, written by
@@ -23,6 +24,11 @@ object MiniAppStore {
     /** HEAD = the repository's default branch, whatever it is called. */
     const val CATALOG = "https://raw.githubusercontent.com/$REPO/HEAD/$INDEX"
     const val PAGE = "https://github.com/$REPO"
+    /** SHA-256 of the key that signs this repository's apps (the official ones). */
+    const val SIGNER = "57b8a7a0466f5dda67b1082e15305d5e3f3156e10ee9e9d0f7af6a505af53bed"
+
+    /** Installed from a package signed with the official key, and its files still match the signature. */
+    fun isOfficial(app: MiniApp) = app.signed && !app.tampered && app.signer.equals(SIGNER, ignoreCase = true)
 
     class Entry(
         val id: String, val name: String, val version: String, val versionCode: Long, val description: String,
@@ -50,7 +56,7 @@ object MiniAppStore {
             val o = runCatching { JSONObject(body) }.getOrElse { throw MiniAppError("DataError", "The catalog isn't valid JSON") }
             if (o.optInt("format", 1) > 1) throw MiniAppError("NotSupportedError", "This catalog needs a newer AntiGem")
             val arr = o.optJSONArray("apps") ?: JSONArray()
-            Catalog(o.optString("name").ifBlank { "Mini apps" }, u.toString(),
+            Catalog(o.optString("name").ifBlank { L.miniapps.miniAppStore.miniApps }, u.toString(),
                 (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.mapNotNull { a -> runCatching { entry(u, a) }.getOrNull() })
         }
     }
@@ -64,7 +70,7 @@ object MiniAppStore {
         require(HEX64.matches(sha) && HEX64.matches(fp))
         return Entry(
             id, a.optString("name").ifBlank { id }, a.optString("version").ifBlank { "0.0.0" }, a.optLong("version_code"),
-            a.optString("description"), a.optString("developer").ifBlank { "Unknown developer" }, fp, pkg.toString(), sha, a.optLong("size"),
+            a.optString("description"), a.optString("developer").ifBlank { L.miniapps.miniAppStore.unknownDeveloper }, fp, pkg.toString(), sha, a.optLong("size"),
             a.optString("icon").takeIf { it.isNotBlank() }?.let { base.resolve(it)?.takeIf(::allowed)?.toString() },
             a.opt("permissions"), a.optString("updated"),
         )
