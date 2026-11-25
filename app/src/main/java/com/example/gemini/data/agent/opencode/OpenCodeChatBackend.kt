@@ -33,16 +33,18 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.security.SecureRandom
+import com.example.gemini.i18n.L
 
 /** Whether OpenCode can be used, as the chat screen and the settings show it. */
-enum class OpenCodeState(val label: String) {
-    CHECKING("Checking…"),
-    READY("Ready"),
-    NOT_INSTALLED("Not installed"),
-    DISABLED("Turned off on the server"),
-    OUTDATED("Server update needed"),
-    OFFLINE("Server offline"),
-    ERROR("Error");
+enum class OpenCodeState(private val labelText: () -> String) {
+    CHECKING({ L.agent.openCodeChatBackend.checking }),
+    READY({ L.agent.openCodeChatBackend.ready }),
+    NOT_INSTALLED({ L.agent.openCodeChatBackend.notInstalled }),
+    DISABLED({ L.agent.openCodeChatBackend.turnedOffOnTheServer }),
+    OUTDATED({ L.agent.openCodeChatBackend.serverUpdateNeeded }),
+    OFFLINE({ L.agent.openCodeChatBackend.serverOffline }),
+    ERROR({ L.agent.openCodeChatBackend.error });
+    val label: String get() = labelText()
 
     /** Sending a message cannot work in this state. */
     val isBlocking get() = this == NOT_INSTALLED || this == DISABLED || this == OUTDATED || this == OFFLINE
@@ -115,6 +117,13 @@ class OpenCodeChatBackend(
     val selectedModelId: StateFlow<String> = _selectedModelId.asStateFlow()
     private val _providers = MutableStateFlow<List<OpenCodeProviderInfo>>(emptyList())
     val providers: StateFlow<List<OpenCodeProviderInfo>> = _providers.asStateFlow()
+
+    private val _modelVariants = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    /** Each model's thinking levels ("provider/model" → OpenCode's variant ids: "low", "high", "none"…), from the model list. */
+    val modelVariants: StateFlow<Map<String, List<String>>> = _modelVariants.asStateFlow()
+    private val _variant = MutableStateFlow<String?>(null)
+    /** Thinking level of the chat on screen (a variant of its model); null = the model's default. */
+    val variant: StateFlow<String?> = _variant.asStateFlow()
 
     private val _agents = MutableStateFlow<List<OpenCodeAgent>>(emptyList())
     val agents: StateFlow<List<OpenCodeAgent>> = _agents.asStateFlow()
@@ -201,7 +210,7 @@ class OpenCodeChatBackend(
                     com.example.gemini.data.remote.SlashCommandItem(
                         id, "/$id",
                         (sk.str("description").orEmpty()).lines().firstOrNull { it.isNotBlank() }.orEmpty(),
-                        type = "skill", argumentHint = "what to do"
+                        type = "skill", argumentHint = L.agent.openCodeChatBackend.whatToDo
                     )
                 }
                 commandNames = cmdItems.map { it.name }.toSet()
@@ -395,16 +404,23 @@ class OpenCodeChatBackend(
                                     displayName = m.str("name") ?: m.str("id").orEmpty(),
                                     description = buildString {
                                         append(names[provider] ?: provider)
-                                        m.o("limit").long("context")?.takeIf { it > 0 }?.let { append(" · ${it / 1000}K context") }
-                                        if (free) append(" · free")
+                                        m.o("limit").long("context")?.takeIf { it > 0 }?.let { append(L.agent.openCodeChatBackend.valueKContext(it / 1000)) }
+                                        if (free) append(L.agent.openCodeChatBackend.free)
                                     },
                                     isDefault = id == defaultId,
                                     key = id,
                                     baseName = names[provider] ?: provider,
-                                    supportsThinking = m.o("capabilities").bool("reasoning") == true || m.o("compatibility").str("reasoningField") != null
+                                    supportsThinking = m.o("capabilities").bool("reasoning") == true || m.o("compatibility").str("reasoningField") != null,
+                                    // OpenCode does not pass images to a model whose input lacks "image" (it tells the model it cannot read them)
+                                    supportsImages = m.o("capabilities").a("input")?.let { input ->
+                                        input.any { (it as? JsonPrimitive)?.content?.startsWith("image") == true }
+                                    }
                                 )
                             }
                             .sortedWith(compareBy({ !it.isDefault }, { it.baseName.lowercase() }, { it.displayName.lowercase() }))
+                        _modelVariants.value = res.obj().a("data").orEmpty().mapNotNull { it.obj() }.associate { m ->
+                            "${m.str("providerID").orEmpty()}/${m.str("id")}" to m.a("variants").orEmpty().mapNotNull { v -> v.obj().str("id") }
+                        }.filterValues { it.isNotEmpty() }
                         _allModels.value = list
                         defaultModelId = defaultId
                         publishModels()
@@ -450,8 +466,8 @@ class OpenCodeChatBackend(
         val list = all.filter { isModelVisible(it.id) }
         _availableModels.value = list
         _modelsError.value = when {
-            all.isEmpty() -> "No models: connect a provider in Settings → OpenCode."
-            list.isEmpty() -> "All models are turned off: turn some on in Settings → OpenCode → Providers."
+            all.isEmpty() -> L.agent.openCodeChatBackend.noModelsConnectAProviderIn
+            list.isEmpty() -> L.agent.openCodeChatBackend.allModelsAreTurnedOffTurn
             else -> null
         }
         val cur = _selectedModelId.value
@@ -461,6 +477,7 @@ class OpenCodeChatBackend(
                 ?: list.firstOrNull()?.id.orEmpty()
             if (store.currentConversation.value?.agent != AgentKind.OPENCODE || store.currentConversation.value?.id !in createdSnapshot()) {
                 _selectedModelId.value = pick
+                _variant.value = rememberedVariant(pick)
             }
         }
     }
@@ -539,6 +556,7 @@ class OpenCodeChatBackend(
             agent = AgentKind.OPENCODE
         )
         _selectedModelId.value = prefs.model.value.takeIf { p -> _availableModels.value.any { it.id == p } } ?: _selectedModelId.value
+        _variant.value = rememberedVariant(_selectedModelId.value)
         _agent.value = prefs.agent.value
         store.currentConversation.value = conv.copy(modelId = _selectedModelId.value)
         _conversationError.value = null
@@ -562,9 +580,10 @@ class OpenCodeChatBackend(
 
     override fun selectConversation(id: String) {
         val conv = _conversations.value.find { it.id == id }
-            ?: Conversation(id = id, title = "OpenCode Chat", sessionId = id, agent = AgentKind.OPENCODE)
+            ?: Conversation(id = id, title = L.agent.openCodeChatBackend.opencodeChat, sessionId = id, agent = AgentKind.OPENCODE)
         store.currentConversation.value = conv
         if (conv.modelId.isNotBlank()) _selectedModelId.value = conv.modelId
+        _variant.value = null
         _conversationError.value = null
         _isLoadingConversation.value = true
         _pendingPermissions.value = emptyList()
@@ -587,7 +606,7 @@ class OpenCodeChatBackend(
         var pages = 0
         while (true) {
             val body = res.getOrElse { e ->
-                if (attachedId == id) _conversationError.value = "Could not load this chat: ${e.message}"
+                if (attachedId == id) _conversationError.value = L.agent.openCodeChatBackend.couldNotLoadThisChatMessage(e.message)
                 return
             }.obj()
             val page = body.a("data").orEmpty().mapNotNull { it.obj() }
@@ -615,7 +634,10 @@ class OpenCodeChatBackend(
                 f.o("metadata") ?: JsonObject(emptyMap())))
         }
         sessionInfo?.let { s ->
-            OpenCodeTranscript.modelRef(s.o("model"))?.let { _selectedModelId.value = it }
+            OpenCodeTranscript.modelRef(s.o("model"))?.let {
+                _selectedModelId.value = it
+                _variant.value = s.o("model").str("variant")
+            }
             s.str("agent")?.let { _agent.value = it }
         }
         if (active) {
@@ -658,7 +680,7 @@ class OpenCodeChatBackend(
         store.attachments.value = emptyList()
         val text = content.trim()
         val title = if (conv.title == "New Chat" || conv.title.isBlank()) {
-            val first = com.example.gemini.data.remote.PromptExpansion.collapse(text.ifBlank { "Attachment" }).lines().firstOrNull { it.isNotBlank() } ?: "Chat"
+            val first = com.example.gemini.data.remote.PromptExpansion.collapse(text.ifBlank { L.agent.openCodeChatBackend.attachment }).lines().firstOrNull { it.isNotBlank() } ?: L.agent.openCodeChatBackend.chat
             first.take(40) + if (first.length > 40) "..." else ""
         } else conv.title
         val updated = conv.copy(title = title, updatedAt = System.currentTimeMillis(), modelId = _selectedModelId.value)
@@ -687,13 +709,13 @@ class OpenCodeChatBackend(
                 val body = buildJsonObject {
                     put("id", conv.id)
                     workspacePath(conv)?.let { dir -> put("location", buildJsonObject { put("directory", dir) }) }
-                    modelRefJson(_selectedModelId.value)?.let { put("model", it) }
+                    modelRefJson(_selectedModelId.value, _variant.value)?.let { put("model", it) }
                     if (_agent.value.isNotBlank() && _agent.value != "build") put("agent", _agent.value)
                     sessionRules(prefs.permissionMode.value, _agent.value)?.let { put("permissions", it) }
                 }
                 val r = client.post("/session", body)
                 if (r.isFailure) {
-                    fail(msgId, "Could not start the OpenCode chat", r.exceptionOrNull())
+                    fail(msgId, L.agent.openCodeChatBackend.couldNotStartTheOpencodeChat, r.exceptionOrNull())
                     return@launch
                 }
                 synchronized(created) { created.add(conv.id) }
@@ -719,7 +741,7 @@ class OpenCodeChatBackend(
                     put("text", (listOf(args) + notes).filter { it.isNotBlank() }.joinToString("\n\n"))
                     if (files.isNotEmpty()) put("files", JsonArray(files))
                 })
-                if (r.isFailure) fail(msgId, "OpenCode did not run /$slashName", r.exceptionOrNull())
+                if (r.isFailure) fail(msgId, L.agent.openCodeChatBackend.opencodeDidNotRunSlashname(slashName), r.exceptionOrNull())
                 else {
                     transcript.dropLocal(msgId)
                     emitNow()
@@ -732,7 +754,7 @@ class OpenCodeChatBackend(
                 if (files.isNotEmpty()) put("files", JsonArray(files))
                 if (slashName != null && slashName in skillIds) put("skills", buildJsonArray { add(buildJsonObject { put("id", slashName) }) })
             })
-            if (r.isFailure) fail(msgId, "OpenCode did not take the message", r.exceptionOrNull())
+            if (r.isFailure) fail(msgId, L.agent.openCodeChatBackend.opencodeDidNotTakeTheMessage, r.exceptionOrNull())
         }
     }
 
@@ -760,7 +782,7 @@ class OpenCodeChatBackend(
     private fun fail(msgId: String, title: String, e: Throwable?) {
         Log.w(TAG, "$title: ${e?.message}")
         transcript.removeLocalPrompt(msgId)
-        transcript.addError(title, e?.message ?: "Unknown error")
+        transcript.addError(title, e?.message ?: L.agent.openCodeChatBackend.unknownError)
         attachedId?.let { running.remove(it) }
         publishConversations()
         emitNow()
@@ -886,16 +908,38 @@ class OpenCodeChatBackend(
 
     fun selectModel(modelId: String) {
         _selectedModelId.value = modelId
+        _variant.value = rememberedVariant(modelId)
         if (rememberChoices) prefs.setModel(modelId)
         val conv = store.currentConversation.value?.takeIf { it.agent == AgentKind.OPENCODE } ?: return
         store.currentConversation.value = conv.copy(modelId = modelId)
         if (conv.id !in createdSnapshot()) return
-        val ref = modelRefJson(modelId) ?: return
+        val ref = modelRefJson(modelId, _variant.value) ?: return
         backendScope.launch {
             client.post("/session/${conv.id}/model", buildJsonObject { put("model", ref) })
                 .onFailure { _toasts.tryEmit("Could not switch the model: ${it.message}") }
         }
     }
+
+    /**
+     * Sets how much the chat's model thinks: one of its variants ([modelVariants]), "none" for no thinking where the model
+     * has it, null for its default. Remembered per model for new chats; applies to the next message of this chat.
+     */
+    fun setVariant(variant: String?) {
+        val modelId = _selectedModelId.value
+        _variant.value = variant
+        if (rememberChoices) prefs.setVariant(modelId, variant)
+        val conv = store.currentConversation.value?.takeIf { it.agent == AgentKind.OPENCODE } ?: return
+        if (conv.id !in createdSnapshot()) return
+        val ref = modelRefJson(modelId, variant) ?: return
+        backendScope.launch {
+            client.post("/session/${conv.id}/model", buildJsonObject { put("model", ref) })
+                .onFailure { _toasts.tryEmit("Could not change thinking: ${it.message}") }
+        }
+    }
+
+    /** The level last picked for [modelId], while the model still has it. */
+    private fun rememberedVariant(modelId: String): String? =
+        prefs.variantFor(modelId)?.takeIf { v -> _modelVariants.value[modelId]?.contains(v) != false }
 
     /** Cancels a provider sign-in that was left open (the settings sheet closed). */
     fun cancelSignIn(integrationId: String, attemptId: String) {
@@ -904,7 +948,7 @@ class OpenCodeChatBackend(
 
     /** Switches the model of any chat (open or not); applies to its next message. */
     suspend fun switchModelOf(sessionId: String, modelId: String): Result<Unit> {
-        val ref = modelRefJson(modelId) ?: return Result.failure(IllegalArgumentException("Not an OpenCode model id: $modelId"))
+        val ref = modelRefJson(modelId, rememberedVariant(modelId)) ?: return Result.failure(IllegalArgumentException("Not an OpenCode model id: $modelId"))
         return client.post("/session/$sessionId/model", buildJsonObject { put("model", ref) }).map { }
     }
 
@@ -1029,10 +1073,10 @@ class OpenCodeChatBackend(
                 }
                 when {
                     quiet >= STALL_MS -> {
-                        val model = _selectedModelId.value.substringAfter('/').ifBlank { "the model" }
+                        val model = _selectedModelId.value.substringAfter('/').ifBlank { L.agent.openCodeChatBackend.theModel }
                         transcript.addError(
-                            "No answer from the model",
-                            "$model did not answer for ${STALL_MS / 1000} s. It may be overloaded or not available on the provider right now: try again, or pick another model."
+                            L.agent.openCodeChatBackend.noAnswerFromTheModel,
+                            L.agent.openCodeChatBackend.modelDidNotAnswerForSeconds(model, STALL_MS / 1000)
                         )
                         transcript.setNotice(null)
                         emitNow()
@@ -1040,7 +1084,7 @@ class OpenCodeChatBackend(
                         break
                     }
                     quiet >= STALL_NOTICE_MS -> {
-                        transcript.setNotice("Waiting for the model to answer… ${quiet / 1000} s")
+                        transcript.setNotice(L.agent.openCodeChatBackend.waitingForTheModelToAnswer(quiet / 1000))
                         noticeShown = true
                         emitNow()
                     }
@@ -1151,7 +1195,10 @@ class OpenCodeChatBackend(
                 }
                 return
             }
-            "session.model.selected" -> OpenCodeTranscript.modelRef(d.o("model"))?.let { _selectedModelId.value = it }
+            "session.model.selected" -> OpenCodeTranscript.modelRef(d.o("model"))?.let {
+                _selectedModelId.value = it
+                _variant.value = d.o("model").str("variant")
+            }
             "session.agent.selected" -> d.str("agent")?.let { _agent.value = it }
         }
         if (changed) emitSoon()
@@ -1180,7 +1227,7 @@ class OpenCodeChatBackend(
         _pendingPermissions.value = transcript.pendingPermissions.values.toList()
         _isStreaming.value = transcript.isTurnActive
         _notice.value = when {
-            transcript.compacting -> "Compacting the conversation…"
+            transcript.compacting -> L.agent.openCodeChatBackend.compactingTheConversation
             else -> transcript.retryNotice
         }
     }
@@ -1194,17 +1241,22 @@ class OpenCodeChatBackend(
     }
 
     private fun defaultWorkspaceUri(): String {
-        val path = com.example.gemini.data.daemon.TermuxDaemonManager.activeProject.value?.path.orEmpty()
+        val path = com.example.gemini.data.daemon.IdeDaemonManager.activeProject.value?.path.orEmpty()
         return if (path.isBlank()) "" else if (path.startsWith("file://")) path else "file://$path"
     }
 
     private fun workspacePath(conv: Conversation): String? = conv.workspaceUri.removePrefix("file://").takeIf { it.startsWith("/") }
 
-    private fun modelRefJson(modelId: String): JsonObject? {
+    /** OpenCode's model reference: {id, providerID, variant}; no variant = the model's default thinking. */
+    private fun modelRefJson(modelId: String, variant: String? = null): JsonObject? {
         val provider = modelId.substringBefore('/', "")
         val model = modelId.substringAfter('/', "")
         if (provider.isBlank() || model.isBlank()) return null
-        return buildJsonObject { put("id", model); put("providerID", provider) }
+        return buildJsonObject {
+            put("id", model)
+            put("providerID", provider)
+            if (!variant.isNullOrBlank()) put("variant", variant)
+        }
     }
 
     companion object {
@@ -1253,7 +1305,9 @@ class OpenCodeChatBackend(
                     rule("websearch", "ask"),
                     rule("external_directory", "ask"),
                     // files the app copied for the chat (OpenCode's `*` also matches across folders; last match wins)
-                    rule("external_directory", "allow", "*/.antigem/uploads/*")
+                    rule("external_directory", "allow", "*/.antigem/uploads/*"),
+                    // Agent memory: memory files and past chats it reads when the app tells it about them
+                    rule("external_directory", "allow", "*/.antigem/memory/*")
                 ))
                 else -> null
             }
