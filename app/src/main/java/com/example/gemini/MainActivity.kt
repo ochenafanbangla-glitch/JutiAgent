@@ -25,6 +25,8 @@ import com.example.gemini.ui.browser.BrowserScreen
 import com.example.gemini.ui.chat.ChatViewModel
 import com.example.gemini.ui.chat.ChatViewModelHolder
 import com.example.gemini.ui.ide.IdeScreen
+import com.example.gemini.ui.components.pageSnapshotSource
+import com.example.gemini.i18n.L
 
 enum class AppViewMode {
     CHAT,
@@ -58,6 +60,8 @@ class MainActivity : ComponentActivity() {
         instanceRef = java.lang.ref.WeakReference(this)
         com.example.gemini.data.jarvis.JarvisPreferences.init(this)
         com.example.gemini.data.context.GlobalContext.init(this)
+        com.example.gemini.data.memory.AgentMemory.init(this)
+        com.example.gemini.data.egm.EgmManager.init(this)
         com.example.gemini.data.remote.inspector.NetworkInspectorManager.isEnabled =
             chatViewModel.authPreferences.getNetworkInspectorEnabledSync()
         com.example.gemini.data.remote.inspector.NetworkInspectorManager.isFloatingBubbleEnabled =
@@ -69,10 +73,10 @@ class MainActivity : ComponentActivity() {
         }
 
         if (com.example.gemini.ui.components.PermissionUtils.hasNotificationPermission(this)) {
-            com.example.gemini.data.service.TermuxService.start(this)
+            com.example.gemini.data.service.AntiGemService.start(this, fromForeground = true)
             com.example.gemini.data.local.LocalServerManager.autoStartOnAppLaunch(this)
         }
-        com.example.gemini.data.daemon.TermuxDaemonManager.init(this)
+        com.example.gemini.data.daemon.IdeDaemonManager.init(this)
         com.example.gemini.ui.browser.BrowserSessionManager.instance.init(this)
         com.example.gemini.data.local.LocalTerminalBridge.instance.init(this)
         com.example.gemini.data.notes.NotesRepository.init(this)
@@ -82,9 +86,38 @@ class MainActivity : ComponentActivity() {
         resetTerminalLauncherOnce()
         com.example.gemini.data.remote.AndroidLocalBridgeServer.instance.start(this)
         com.example.gemini.data.jarvis.JarvisController.attach(application, chatViewModel)
+        // Jarvis over other apps (Settings → Jarvis → Screen & look → Float over other apps)
+        com.example.gemini.ui.jarvis.JarvisFloating.attach(this)
         com.example.gemini.data.agent.ChatCompletionMonitor.start(application, chatViewModel)
+        com.example.gemini.data.memory.MemorySync.start(chatViewModel)
         handleIncomingFileIntent(intent)
         handleJarvisIntent(intent)
+        handleVoiceCallIntent(intent)
+        // Home-screen shortcuts and widgets: the chat / page / script they asked for (not again when recreated); the
+        // chat list they show is kept up to date from here on
+        if (savedInstanceState == null) com.example.gemini.data.homescreen.HomeRouter.handle(this, chatViewModel, intent)
+        com.example.gemini.data.homescreen.HomeSnapshot.start(application, chatViewModel)
+        com.example.gemini.ui.homescreen.HomeWidgets.publishPreviews(this)
+        // Voice call tile / shortcut: the floating call window stays away while this screen is up; the long-press menu
+        // of the app icon gets "Voice call"
+        lifecycle.addObserver(androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_START -> com.example.gemini.data.voice.VoiceCallLauncher.setAppVisible(true)
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> com.example.gemini.data.voice.VoiceCallLauncher.setAppVisible(false)
+                else -> Unit
+            }
+        })
+        com.example.gemini.data.voice.AgyVoicePreferences.init(this)
+        com.example.gemini.data.voice.VoiceCallLauncher.publishShortcut(this)
+        com.example.gemini.ui.voice.AgyVoiceBubble.attach(this)
+
+        // Back that no screen handles (the chat root) puts the app in the background instead of closing it, on every
+        // Android version. Registered before setContent, so every screen's own BackHandler still runs first.
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                moveTaskToBack(true)
+            }
+        })
 
         setContent {
             val initialThemeMode = remember { chatViewModel.authPreferences.getThemeModeSync() }
@@ -110,7 +143,17 @@ class MainActivity : ComponentActivity() {
                     else -> AppViewMode.CHAT
                 }
             }
-            var currentViewMode by remember { mutableStateOf(initialViewMode) }
+            // The page overview: a card per page, opened from the switcher's pill or the overview pill
+            var showPageOverview by remember { mutableStateOf(false) }
+            // Every page change goes through here. While the overview can be opened, the page being left is pictured for
+            // its card (not while the overview covers it: it pictured that page when it opened)
+            var currentViewMode by remember {
+                com.example.gemini.ui.components.PageChangeState(initialViewMode) { left ->
+                    if (!showPageOverview && chatViewModel.authPreferences.isPageOverviewInUseSync()) {
+                        com.example.gemini.ui.components.PageSnapshots.capture(this@MainActivity, left)
+                    }
+                }
+            }
             var previousViewMode by remember { mutableStateOf(AppViewMode.CHAT) }
 
             LaunchedEffect(requestedMode) {
@@ -160,6 +203,28 @@ class MainActivity : ComponentActivity() {
             val floatingSwitcherAutoCollapseSec by chatViewModel.floatingSwitcherAutoCollapseSec.collectAsState()
             val floatingSwitcherPosX by chatViewModel.floatingSwitcherPosX.collectAsState()
             val floatingSwitcherPosY by chatViewModel.floatingSwitcherPosY.collectAsState()
+            val floatingSwitcherHandleIcon by chatViewModel.floatingSwitcherHandleIcon.collectAsState()
+            val switcherPrefs = chatViewModel.authPreferences
+            // The page overview opens from a tap on the switcher's pill ("SWITCHER"), from its own pill ("OWN_PILL"), or is off
+            val pageOverviewMode by switcherPrefs.pageOverviewMode
+                .collectAsState(initial = switcherPrefs.getPageOverviewModeSync())
+            val switcherTapOpensOverview = pageOverviewMode == "SWITCHER"
+            val overviewPillEnabled = pageOverviewMode == "OWN_PILL"
+            val floatingSwitcherScale by switcherPrefs.floatingSwitcherScale
+                .collectAsState(initial = switcherPrefs.getFloatingSwitcherScaleSync())
+            val overviewPillScale by switcherPrefs.overviewPillScale
+                .collectAsState(initial = switcherPrefs.getOverviewPillScaleSync())
+            val overviewPillPosX by switcherPrefs.overviewPillPosX
+                .collectAsState(initial = switcherPrefs.getOverviewPillPositionSync().first)
+            val overviewPillPosY by switcherPrefs.overviewPillPosY
+                .collectAsState(initial = switcherPrefs.getOverviewPillPositionSync().second)
+            val pageOverviewLayout by switcherPrefs.pageOverviewLayout
+                .collectAsState(initial = switcherPrefs.getPageOverviewLayoutSync())
+            // the page overview can be opened (from the switcher's tap or the overview pill): record the pages for it
+            val pageOverviewInUse = switcherTapOpensOverview || overviewPillEnabled
+            // Where the chat's bottom input area starts (root px); read only inside the switcher, so updates don't
+            // recompose this whole screen.
+            val chatBottomAreaTop = remember { mutableStateOf<Float?>(null) }
             val isFloatingDiagnosticsEnabled by chatViewModel.isFloatingDiagnosticsEnabled.collectAsState()
             val isNetworkInspectorEnabled by chatViewModel.isNetworkInspectorEnabled.collectAsState()
             val isFloatingNetworkInspectorEnabled by chatViewModel.isFloatingNetworkInspectorEnabled.collectAsState()
@@ -185,6 +250,16 @@ class MainActivity : ComponentActivity() {
             // Jarvis (voice mode) needs to know which screen the user is on
             LaunchedEffect(currentViewMode) {
                 com.example.gemini.data.jarvis.JarvisController.screen.value = currentViewMode.name.lowercase()
+            }
+
+            // Any page change (a pill's icon panel, a notification, a screen's own button) closes the page overview
+            LaunchedEffect(currentViewMode) { showPageOverview = false }
+            // Overview turned off in Settings: free its page pictures
+            LaunchedEffect(switcherTapOpensOverview, overviewPillEnabled) {
+                if (!switcherTapOpensOverview && !overviewPillEnabled) {
+                    com.example.gemini.ui.components.PageSnapshots.shots.clear()
+                    showPageOverview = false
+                }
             }
 
             val context = androidx.compose.ui.platform.LocalContext.current
@@ -216,8 +291,6 @@ class MainActivity : ComponentActivity() {
                 mutableStateOf(!com.example.gemini.ui.components.PermissionUtils.hasNotificationPermission(context))
             }
 
-            val isTermuxPackage =
-                remember { com.example.gemini.data.local.LocalEnvironmentManager.isTermuxPackage(context) }
             var isInstalledState by remember {
                 mutableStateOf(
                     com.example.gemini.data.local.LocalEnvironmentManager.isInstalled(
@@ -240,7 +313,7 @@ class MainActivity : ComponentActivity() {
                         com.example.gemini.ui.components.AppPermissionsDialog(
                             onDismissOrCompleted = {
                                 showPermissionsDialog = false
-                                com.example.gemini.data.service.TermuxService.start(context)
+                                com.example.gemini.data.service.AntiGemService.start(context, fromForeground = true)
                                 com.example.gemini.data.local.LocalServerManager.autoStartOnAppLaunch(context)
                             }
                         )
@@ -305,6 +378,8 @@ class MainActivity : ComponentActivity() {
                                             alpha = if (isVisible) 1f else 0f
                                             translationX = if (isVisible) 0f else -20000f
                                         }
+                                        // its drawing, for its picture in the page overview (without the floating pills over it)
+                                        .pageSnapshotSource(AppViewMode.CHAT, pageOverviewInUse)
                                 ) {
                                     ChatScreen(
                                         viewModel = chatViewModel,
@@ -327,7 +402,8 @@ class MainActivity : ComponentActivity() {
                                         onNavigateToFiles = {
                                             previousViewMode = currentViewMode
                                             currentViewMode = AppViewMode.FILES
-                                        }
+                                        },
+                                        onBottomAreaTopChanged = { chatBottomAreaTop.value = it }
                                     )
                                 }
 
@@ -340,6 +416,8 @@ class MainActivity : ComponentActivity() {
                                             alpha = if (isVisible) 1f else 0f
                                             translationX = if (isVisible) 0f else 20000f
                                         }
+                                        // its drawing, for its picture in the page overview (without the floating pills over it)
+                                        .pageSnapshotSource(AppViewMode.IDE, pageOverviewInUse)
                                 ) {
                                     IdeScreen(
                                         viewModel = chatViewModel,
@@ -371,12 +449,21 @@ class MainActivity : ComponentActivity() {
                                             alpha = if (isVisible) 1f else 0f
                                             translationX = if (isVisible) 0f else 20000f
                                         }
+                                        // its drawing, for its picture in the page overview (without the floating pills over it)
+                                        .pageSnapshotSource(AppViewMode.TERMINAL, pageOverviewInUse)
                                 ) {
                                     if (currentViewMode == AppViewMode.TERMINAL || (hasEverOpenedTerminal && terminalSessions.isNotEmpty())) {
                                         com.example.gemini.ui.components.LocalTerminalContent(
                                             onClose = {
                                                 currentViewMode =
                                                     if (previousViewMode == AppViewMode.TERMINAL) AppViewMode.CHAT else previousViewMode
+                                            },
+                                            isVisible = currentViewMode == AppViewMode.TERMINAL,
+                                            // the drawer's gear: Settings lives on the chat screen
+                                            onOpenSettings = {
+                                                previousViewMode = currentViewMode
+                                                currentViewMode = AppViewMode.CHAT
+                                                chatViewModel.requestSettingsSection("TERMINAL")
                                             }
                                         )
                                     }
@@ -391,6 +478,8 @@ class MainActivity : ComponentActivity() {
                                             alpha = if (isVisible) 1f else 0f
                                             translationX = if (isVisible) 0f else 20000f
                                         }
+                                        // its drawing, for its picture in the page overview (without the floating pills over it)
+                                        .pageSnapshotSource(AppViewMode.BROWSER, pageOverviewInUse)
                                 ) {
                                     BrowserScreen(
                                         isVisible = currentViewMode == AppViewMode.BROWSER,
@@ -410,6 +499,8 @@ class MainActivity : ComponentActivity() {
                                             alpha = if (isVisible) 1f else 0f
                                             translationX = if (isVisible) 0f else 20000f
                                         }
+                                        // its drawing, for its picture in the page overview (without the floating pills over it)
+                                        .pageSnapshotSource(AppViewMode.NOTES, pageOverviewInUse)
                                 ) {
                                     com.example.gemini.ui.notes.NotesScreen(
                                         isVisible = currentViewMode == AppViewMode.NOTES,
@@ -431,6 +522,8 @@ class MainActivity : ComponentActivity() {
                                             alpha = if (isVisible) 1f else 0f
                                             translationX = if (isVisible) 0f else 20000f
                                         }
+                                        // its drawing, for its picture in the page overview (without the floating pills over it)
+                                        .pageSnapshotSource(AppViewMode.FILES, pageOverviewInUse)
                                 ) {
                                     if (hasEverOpenedFiles) {
                                         com.example.gemini.ui.files.FileExplorer(
@@ -453,7 +546,7 @@ class MainActivity : ComponentActivity() {
                                                 currentViewMode = AppViewMode.IDE
                                             },
                                             onProjectCreated = { proj ->
-                                                com.example.gemini.data.daemon.TermuxDaemonManager.setActiveProject(proj)
+                                                com.example.gemini.data.daemon.IdeDaemonManager.setActiveProject(proj)
                                                 chatViewModel.onProjectChanged(proj.path)
                                                 previousViewMode = currentViewMode
                                                 currentViewMode = AppViewMode.IDE
@@ -485,6 +578,8 @@ class MainActivity : ComponentActivity() {
                                             alpha = if (isVisible) 1f else 0f
                                             translationX = if (isVisible) 0f else 20000f
                                         }
+                                        // its drawing, for its picture in the page overview (without the floating pills over it)
+                                        .pageSnapshotSource(AppViewMode.RUN, pageOverviewInUse)
                                 ) {
                                     if (hasEverOpenedRun) {
                                         com.example.gemini.ui.run.RunScreen(
@@ -536,6 +631,64 @@ class MainActivity : ComponentActivity() {
                                         switcherLastSeenMode = currentViewMode
                                     }
                                 }
+                                // Double-tap on a pill: back to the page shown before (closing the overview if a tap opened it)
+                                val switcherNavigateBack: () -> Unit = {
+                                    val target = switcherBackTarget
+                                    when {
+                                        target == null || target == currentViewMode -> Unit
+                                        target == AppViewMode.TERMINAL -> openTerminalFromSwitcher()
+                                        else -> {
+                                            previousViewMode = currentViewMode
+                                            currentViewMode = target
+                                        }
+                                    }
+                                    // after the page change, so the overview on screen isn't pictured as the page that was left
+                                    showPageOverview = false
+                                }
+                                // A pill tap (overview mode): open the overview, picturing the shown page first; again closes it
+                                val togglePageOverview: () -> Unit = {
+                                    if (showPageOverview) {
+                                        showPageOverview = false
+                                    } else {
+                                        com.example.gemini.ui.components.PageSnapshots.capture(this@MainActivity, currentViewMode)
+                                        showPageOverview = true
+                                    }
+                                }
+                                val openPageFromOverview: (String) -> Unit = { id ->
+                                    val mode = when (id) {
+                                        "chat" -> AppViewMode.CHAT
+                                        "ide" -> AppViewMode.IDE
+                                        "browser" -> AppViewMode.BROWSER
+                                        "notes" -> AppViewMode.NOTES
+                                        "files" -> AppViewMode.FILES
+                                        "run" -> AppViewMode.RUN
+                                        else -> null
+                                    }
+                                    when {
+                                        id == "terminal" -> openTerminalFromSwitcher()
+                                        mode != null && mode != currentViewMode -> {
+                                            previousViewMode = currentViewMode
+                                            currentViewMode = mode
+                                        }
+                                    }
+                                    showPageOverview = false // after the page change (see switcherNavigateBack)
+                                }
+                                val pageOverviewScope = rememberCoroutineScope()
+                                com.example.gemini.ui.components.PageOverview(
+                                    visible = showPageOverview,
+                                    currentViewMode = currentViewMode,
+                                    items = floatingSwitcherItems,
+                                    layout = pageOverviewLayout,
+                                    chatWorking = chatViewModel.isStreaming,
+                                    chatConversation = chatViewModel.currentConversation,
+                                    onOpenPage = openPageFromOverview,
+                                    onLayoutChange = { layout ->
+                                        pageOverviewScope.launch { switcherPrefs.savePageOverviewLayout(layout) }
+                                    },
+                                    // a tile held and dragged to a new place: the switcher's order (its panel and Settings follow)
+                                    onReorder = { order -> chatViewModel.setFloatingSwitcherItems(order) },
+                                    onDismiss = { showPageOverview = false }
+                                )
                                 com.example.gemini.ui.components.FloatingSwitcherWidget(
                                     currentViewMode = currentViewMode,
                                     orientation = floatingSwitcherOrientation,
@@ -543,6 +696,14 @@ class MainActivity : ComponentActivity() {
                                     autoCollapseTimeoutSec = floatingSwitcherAutoCollapseSec,
                                     savedPosXRatio = floatingSwitcherPosX,
                                     savedPosYRatio = floatingSwitcherPosY,
+                                    handleIcon = floatingSwitcherHandleIcon,
+                                    scale = floatingSwitcherScale,
+                                    tapOpensOverview = switcherTapOpensOverview,
+                                    onOpenOverview = togglePageOverview,
+                                    // the chat stays composed (moved off-screen) under other screens: use it only when shown
+                                    bottomAreaTopPx = {
+                                        if (currentViewMode == AppViewMode.CHAT) chatBottomAreaTop.value else null
+                                    },
                                     onNavigateToChat = {
                                         previousViewMode = currentViewMode
                                         currentViewMode = AppViewMode.CHAT
@@ -568,22 +729,40 @@ class MainActivity : ComponentActivity() {
                                         previousViewMode = currentViewMode
                                         currentViewMode = AppViewMode.RUN
                                     },
-                                    onNavigateBack = {
-                                        val target = switcherBackTarget
-                                        when {
-                                            target == null || target == currentViewMode -> Unit
-                                            target == AppViewMode.TERMINAL -> openTerminalFromSwitcher()
-                                            else -> {
-                                                previousViewMode = currentViewMode
-                                                currentViewMode = target
-                                            }
-                                        }
-                                    },
+                                    onNavigateBack = switcherNavigateBack,
                                     onPositionSaved = { x, y ->
                                         chatViewModel.saveFloatingSwitcherPosition(x, y)
                                     },
                                     onOrientationChange = { chatViewModel.setFloatingSwitcherOrientation(it) }
                                 )
+                                // The overview pill: a second pill that only opens the page overview (Settings → Appearance)
+                                if (overviewPillEnabled) {
+                                    val overviewPillScope = rememberCoroutineScope()
+                                    com.example.gemini.ui.components.FloatingSwitcherWidget(
+                                        currentViewMode = currentViewMode,
+                                        orientation = floatingSwitcherOrientation,
+                                        items = floatingSwitcherItems,
+                                        autoCollapseTimeoutSec = 0,
+                                        savedPosXRatio = overviewPillPosX,
+                                        savedPosYRatio = overviewPillPosY,
+                                        handleIconOverride = com.example.gemini.ui.components.PageOverviewPillIcon,
+                                        scale = overviewPillScale,
+                                        tapOpensOverview = true,
+                                        onOpenOverview = togglePageOverview,
+                                        bottomAreaTopPx = {
+                                            if (currentViewMode == AppViewMode.CHAT) chatBottomAreaTop.value else null
+                                        },
+                                        // it never opens the icon panel
+                                        onNavigateToChat = {},
+                                        onNavigateToIde = {},
+                                        onNavigateToBrowser = {},
+                                        onNavigateToTerminal = {},
+                                        onNavigateBack = switcherNavigateBack,
+                                        onPositionSaved = { x, y ->
+                                            overviewPillScope.launch { switcherPrefs.saveOverviewPillPosition(x, y) }
+                                        }
+                                    )
+                                }
                                 if (showSwitcherToolsInstall) {
                                     com.example.gemini.ui.settings.LocalToolsInstallDialog(
                                         authPreferences = chatViewModel.authPreferences,
@@ -658,6 +837,13 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
 
+                                // Gemmy: floating cartoon buddy (drag/fling, tap, double-tap, long-press menu; reacts to the agent working).
+                                // Shown after its one-time intro was answered and while on in Settings → Appearance.
+                                com.example.gemini.ui.components.GemmyOverlay(
+                                    prefs = chatViewModel.authPreferences,
+                                    agentWorking = chatViewModel.isCurrentChatActivelyRunning
+                                )
+
                                 // Global Network Inspector Dialog
                                 if (showNetworkInspectorDialog) {
                                     com.example.gemini.ui.components.NetworkInspectorDialog(
@@ -685,7 +871,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         instanceRef = java.lang.ref.WeakReference(this)
         if (com.example.gemini.ui.components.PermissionUtils.hasNotificationPermission(this)) {
-            com.example.gemini.data.service.TermuxService.start(this)
+            com.example.gemini.data.service.AntiGemService.start(this, fromForeground = true)
             com.example.gemini.data.local.LocalServerManager.autoStartOnAppLaunch(this)
         }
     }
@@ -694,6 +880,8 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         handleIncomingFileIntent(intent)
         handleJarvisIntent(intent)
+        handleVoiceCallIntent(intent)
+        com.example.gemini.data.homescreen.HomeRouter.handle(this, chatViewModel, intent)
     }
 
     /**
@@ -720,6 +908,13 @@ class MainActivity : ComponentActivity() {
         window.decorView.postDelayed({
             if (com.example.gemini.data.jarvis.JarvisController.isAttached) com.example.gemini.data.jarvis.JarvisController.startListening()
         }, 700)
+    }
+
+    /** The Voice call tile or shortcut opened the app: the chat screen starts the call once the server is up. */
+    private fun handleVoiceCallIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(com.example.gemini.data.voice.VoiceCallLauncher.EXTRA_START_CALL, false) != true) return
+        intent.removeExtra(com.example.gemini.data.voice.VoiceCallLauncher.EXTRA_START_CALL)
+        com.example.gemini.data.voice.VoiceCallLauncher.requestStart()
     }
 
     /**
@@ -782,7 +977,7 @@ class MainActivity : ComponentActivity() {
         val uri = item.uri
         when {
             item.text != null -> {
-                com.example.gemini.data.daemon.TermuxDaemonManager.openOrSelectTab(
+                com.example.gemini.data.daemon.IdeDaemonManager.openOrSelectTab(
                     path = "shared-text:${System.currentTimeMillis()}/${item.name}",
                     name = item.name,
                     content = item.text,
@@ -797,12 +992,12 @@ class MainActivity : ComponentActivity() {
                     val dest = java.io.File(dir, item.name)
                     contentResolver.openInputStream(uri)?.use { input -> dest.outputStream().use { input.copyTo(it) } }
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        com.example.gemini.data.daemon.TermuxDaemonManager.openOrSelectTab(dest.absolutePath, item.name, "")
+                        com.example.gemini.data.daemon.IdeDaemonManager.openOrSelectTab(dest.absolutePath, item.name, "")
                         chatViewModel.requestViewMode("IDE")
                     }
                 } catch (e: Exception) {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        com.example.gemini.ui.components.AppToastHelper.showToast("Could not open ${item.name}", com.example.gemini.ui.components.ChatToastType.ERROR)
+                        com.example.gemini.ui.components.AppToastHelper.showToast(L.app.mainActivity.couldNotOpenName(item.name), com.example.gemini.ui.components.ChatToastType.ERROR)
                     }
                 }
             }
