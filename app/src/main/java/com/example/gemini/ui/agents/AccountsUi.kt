@@ -1,7 +1,5 @@
 package com.example.gemini.ui.agents
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,8 +26,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Login
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -42,6 +40,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -62,6 +63,32 @@ import com.example.gemini.domain.model.AgentKind
 import com.example.gemini.ui.components.accent
 import com.example.gemini.ui.components.label
 import com.example.gemini.ui.drawer.parseProfileAvatarModel
+import com.example.gemini.i18n.L
+
+/**
+ * "Sign out of [agentName]?" with Sign out / Cancel, shown before every agent sign-out (a sign-out button can appear right
+ * where Check or Sign in was a moment ago, so a quick extra tap must not sign the user out). [account]: the email, if known.
+ */
+@Composable
+fun ConfirmSignOutDialog(agentName: String, account: String?, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(L.agents.accountsUi.signOutOfAgent(agentName)) },
+        text = {
+            Column {
+                account?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(6.dp))
+                }
+                Text(L.agents.accountsUi.youWillHaveToSignIn(agentName))
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onDismiss(); onConfirm() }) { Text(L.common.signOut, color = MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(L.common.cancel) } }
+    )
+}
 
 /** Account avatar: the profile picture or initial when signed in, a sign-in glyph otherwise; status badge corner. */
 @Composable
@@ -149,13 +176,13 @@ fun AccountsButton(
             }
             Spacer(Modifier.width(7.dp))
             val text = when {
-                needsSignIn -> "Sign in"
-                single?.agent == AgentKind.AGY && single.isReady -> agyAuth.displayName.ifBlank { "Account" }
-                single?.agent == AgentKind.CLAUDE && single.isReady -> claudeStatus?.auth?.email?.substringBefore('@') ?: "Account"
+                needsSignIn -> L.common.signIn
+                single?.agent == AgentKind.AGY && single.isReady -> agyAuth.displayName.ifBlank { L.common.account }
+                single?.agent == AgentKind.CLAUDE && single.isReady -> claudeStatus?.auth?.email?.substringBefore('@') ?: L.common.account
                 single?.agent == AgentKind.OPENCODE && single.isReady -> "OpenCode"
-                single?.agent == AgentKind.CODEX && single.isReady -> codexEmail?.substringBefore('@') ?: "Codex"
+                single?.agent == AgentKind.CODEX && single.isReady -> codexEmail?.substringBefore('@') ?: L.common.codex
                 single != null -> single.label
-                else -> "Accounts"
+                else -> L.agents.accountsUi.accounts
             }
             Text(
                 text,
@@ -180,6 +207,7 @@ fun AccountsDialog(
     claudeStatus: ClaudeCliStatus?,
     onAgySignOut: () -> Unit,
     onAgyCancelSignIn: () -> Unit,
+    onAgySettings: () -> Unit = {},
     onClaudeSignOut: () -> Unit,
     onClaudeSettings: () -> Unit,
     onDismiss: () -> Unit,
@@ -194,7 +222,8 @@ fun AccountsDialog(
     onCodexSignOut: () -> Unit = {},
     onCodexSettings: () -> Unit = {}
 ) {
-    val context = LocalContext.current
+    // the agent whose Sign out was tapped: asks first
+    var confirmSignOut by remember { mutableStateOf<AgentKind?>(null) }
     // `agy --version`, asked from the bridge (this phone's or the server's) each time the dialog opens
     val agyCli by com.example.gemini.data.remote.BridgeInfo.agyCli.collectAsState()
     LaunchedEffect(Unit) { com.example.gemini.data.remote.BridgeInfo.refreshAgyCli() }
@@ -210,16 +239,11 @@ fun AccountsDialog(
         ) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Accounts", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text(L.agents.accountsUi.accounts, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     IconButton(onClick = onDismiss, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Outlined.Close, "Close", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        Icon(Icons.Outlined.Close, L.common.close, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                     }
                 }
-                Text(
-                    "Each agent signs in on its own.",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
-                )
                 Spacer(Modifier.height(14.dp))
 
                 agy?.let { entry ->
@@ -227,7 +251,7 @@ fun AccountsDialog(
                         entry = entry,
                         avatar = { AccountAvatar(AgentKind.AGY, entry, agyAuth.displayName.firstOrNull(), agyAuth.profilePictureUrl?.takeIf { it.isNotBlank() }, size = 44.dp) },
                         title = if (entry.isReady) agyAuth.displayName.ifBlank { AgentKind.AGY.label() } else AgentKind.AGY.label(),
-                        subtitle = if (entry.isReady) agyAuth.email.ifBlank { null } else entry.detail,
+                        subtitle = agyAuth.email.ifBlank { null }?.takeIf { entry.isReady },
                         facts = if (entry.isReady) listOfNotNull(
                             agyAuth.userTier.ifBlank { agyAuth.planName }.ifBlank { null },
                             agyVersion?.let { "CLI $it" }
@@ -235,19 +259,13 @@ fun AccountsDialog(
                     ) {
                         when {
                             entry.isReady -> {
-                                if (agyAuth.upgradeSubscriptionUri.isNotBlank()) {
-                                    SectionButton(agyAuth.upgradeSubscriptionText.ifBlank { "Manage plan" }, Icons.AutoMirrored.Outlined.OpenInNew) {
-                                        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(agyAuth.upgradeSubscriptionUri))) }
-                                    }
-                                }
-                                SectionButton("Sign out", Icons.AutoMirrored.Outlined.Logout, danger = true) {
-                                    onAgySignOut()
-                                    onDismiss()
+                                SectionButton(L.common.signOut, Icons.AutoMirrored.Outlined.Logout, danger = true) {
+                                    confirmSignOut = AgentKind.AGY
                                 }
                             }
                             entry.pending && entry.action != null -> {
                                 entry.action.let { SectionButton(it.label, primary = AgentKind.AGY.accent()) { it.onClick() } }
-                                SectionButton("Cancel") { onAgyCancelSignIn() }
+                                SectionButton(L.common.cancel) { onAgyCancelSignIn() }
                             }
                             else -> entry.action?.let {
                                 SectionButton(it.label, primary = AgentKind.AGY.accent()) {
@@ -255,6 +273,10 @@ fun AccountsDialog(
                                     onDismiss()
                                 }
                             }
+                        }
+                        SectionButton(L.common.settings, Icons.Outlined.Settings) {
+                            onAgySettings()
+                            onDismiss()
                         }
                     }
                 }
@@ -267,19 +289,14 @@ fun AccountsDialog(
                         entry = entry,
                         avatar = { AccountAvatar(AgentKind.CLAUDE, entry, auth?.email?.firstOrNull(), size = 44.dp) },
                         title = AgentKind.CLAUDE.label(),
-                        subtitle = if (entry.isReady) auth?.email else entry.detail,
+                        subtitle = if (entry.isReady) auth?.email else null,
                         facts = if (entry.isReady) listOfNotNull(
                             auth?.subscriptionType?.let { claudePlanLabel(it) },
-                            auth?.authMethod?.let { claudeAuthMethodLabel(it) },
                             claudeStatus?.version?.substringBefore(" ")?.let { "CLI $it" }
                         ) else listOfNotNull(claudeStatus?.version?.substringBefore(" ")?.let { "CLI $it" })
                     ) {
                         if (entry.isReady) {
-                            SectionButton("Claude settings", Icons.Outlined.Settings) {
-                                onClaudeSettings()
-                                onDismiss()
-                            }
-                            SectionButton("Sign out", Icons.AutoMirrored.Outlined.Logout, danger = true) { onClaudeSignOut() }
+                            SectionButton(L.common.signOut, Icons.AutoMirrored.Outlined.Logout, danger = true) { confirmSignOut = AgentKind.CLAUDE }
                         } else {
                             entry.action?.let {
                                 SectionButton(it.label, primary = AgentKind.CLAUDE.accent()) {
@@ -287,10 +304,10 @@ fun AccountsDialog(
                                     onDismiss()
                                 }
                             }
-                            if (!entry.pending) SectionButton("Claude settings", Icons.Outlined.Settings) {
-                                onClaudeSettings()
-                                onDismiss()
-                            }
+                        }
+                        SectionButton(L.common.settings, Icons.Outlined.Settings) {
+                            onClaudeSettings()
+                            onDismiss()
                         }
                     }
                 }
@@ -302,10 +319,30 @@ fun AccountsDialog(
 
                 codex?.let { entry ->
                     if (agy != null || claude != null || openCode != null) Spacer(Modifier.height(12.dp))
-                    CodexAccountSection(entry, codexEmail, codexFacts, onCodexSignOut, onCodexSettings, onDismiss)
+                    CodexAccountSection(entry, codexEmail, codexFacts, { confirmSignOut = AgentKind.CODEX }, onCodexSettings, onDismiss)
                 }
             }
         }
+    }
+    confirmSignOut?.let { agent ->
+        ConfirmSignOutDialog(
+            agentName = agent.label(),
+            account = when (agent) {
+                AgentKind.AGY -> agyAuth.email
+                AgentKind.CLAUDE -> claudeStatus?.auth?.email
+                AgentKind.CODEX -> codexEmail
+                else -> null
+            },
+            onConfirm = {
+                when (agent) {
+                    AgentKind.AGY -> { onAgySignOut(); onDismiss() }
+                    AgentKind.CLAUDE -> onClaudeSignOut()
+                    AgentKind.CODEX -> onCodexSignOut()
+                    else -> {}
+                }
+            },
+            onDismiss = { confirmSignOut = null }
+        )
     }
 }
 
@@ -322,15 +359,11 @@ private fun CodexAccountSection(
         entry = entry,
         avatar = { AccountAvatar(AgentKind.CODEX, entry, email?.firstOrNull(), size = 44.dp) },
         title = AgentKind.CODEX.label(),
-        subtitle = if (entry.isReady) email ?: "Signed in" else entry.detail,
+        subtitle = if (entry.isReady) email else null,
         facts = facts
     ) {
         if (entry.isReady) {
-            SectionButton("Codex settings", Icons.Outlined.Settings) {
-                onSettings()
-                onDismiss()
-            }
-            SectionButton("Sign out", Icons.AutoMirrored.Outlined.Logout, danger = true) { onSignOut() }
+            SectionButton(L.common.signOut, Icons.AutoMirrored.Outlined.Logout, danger = true) { onSignOut() }
         } else {
             entry.action?.let {
                 SectionButton(it.label, primary = AgentKind.CODEX.accent()) {
@@ -338,10 +371,10 @@ private fun CodexAccountSection(
                     onDismiss()
                 }
             }
-            if (!entry.pending) SectionButton("Codex settings", Icons.Outlined.Settings) {
-                onSettings()
-                onDismiss()
-            }
+        }
+        SectionButton(L.common.settings, Icons.Outlined.Settings) {
+            onSettings()
+            onDismiss()
         }
     }
 }
@@ -352,7 +385,7 @@ private fun OpenCodeAccountSection(entry: AgentStatusEntry, facts: List<String>,
         entry = entry,
         avatar = { AccountAvatar(AgentKind.OPENCODE, entry, null, size = 44.dp) },
         title = AgentKind.OPENCODE.label(),
-        subtitle = if (entry.isReady) "No sign-in: each provider uses its own API key (free models need none)." else entry.detail,
+        subtitle = null,
         facts = facts
     ) {
         if (!entry.isReady) entry.action?.let {
@@ -361,17 +394,11 @@ private fun OpenCodeAccountSection(entry: AgentStatusEntry, facts: List<String>,
                 onDismiss()
             }
         }
-        SectionButton(if (entry.isReady) "Providers & settings" else "OpenCode settings", Icons.Outlined.Settings) {
+        SectionButton(L.common.settings, Icons.Outlined.Settings) {
             onSettings()
             onDismiss()
         }
     }
-}
-
-private fun claudeAuthMethodLabel(raw: String): String = when (raw.lowercase()) {
-    "claude.ai", "claudeai", "oauth" -> "Claude account"
-    "console", "api_key", "apikey" -> "Anthropic Console"
-    else -> raw
 }
 
 @OptIn(ExperimentalLayoutApi::class)
