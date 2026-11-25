@@ -24,10 +24,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.gemini.data.adb.AdbConnectManager
+import com.example.gemini.data.adb.DeviceAccess
+import com.example.gemini.data.adb.RootShell
+import com.example.gemini.data.adb.ShizukuShell
 import com.example.gemini.data.automation.AndroidAutomation
 import com.example.gemini.theme.QuotaGreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.example.gemini.i18n.L
 
 /**
  * Android Automation has no on/off switch: it is "on" once the user grants the Accessibility service here,
@@ -37,8 +41,11 @@ import kotlinx.coroutines.launch
 fun AndroidAutomationScreen(cardBg: Color, cardBorder: BorderStroke, onOpenAdbConnect: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    LaunchedEffect(Unit) { AdbConnectManager.init(context); AdbConnectManager.refresh() }
+    LaunchedEffect(Unit) { AdbConnectManager.init(context); DeviceAccess.init(context); AdbConnectManager.refresh() }
     val adb by AdbConnectManager.state.collectAsState()
+    val accessMode by DeviceAccess.mode.collectAsState()
+    val shizuku by ShizukuShell.status.collectAsState()
+    val root by RootShell.state.collectAsState()
 
     var running by remember { mutableStateOf(AndroidAutomation.isServiceRunning()) }
     var enabledInSettings by remember { mutableStateOf(AndroidAutomation.isServiceEnabledInSettings(context)) }
@@ -52,6 +59,23 @@ fun AndroidAutomationScreen(cardBg: Color, cardBorder: BorderStroke, onOpenAdbCo
     var enablingViaAdb by remember { mutableStateOf(false) }
     var adbError by remember { mutableStateOf<String?>(null) }
     val adbDevice = adb.connectedDevice
+    LaunchedEffect(Unit) {
+        while (true) {
+            ShizukuShell.refresh()
+            delay(2000)
+        }
+    }
+    // the picked way in (Settings → ADB Connect) is usable now; ADB may also connect by itself when it's needed
+    val accessReady = when (accessMode) {
+        DeviceAccess.Mode.ADB -> adbDevice != null
+        DeviceAccess.Mode.SHIZUKU -> shizuku.ready
+        DeviceAccess.Mode.ROOT -> root.check == RootShell.Check.GRANTED
+    }
+    val accessDetail = when (accessMode) {
+        DeviceAccess.Mode.ADB -> adbDevice?.serial
+        DeviceAccess.Mode.SHIZUKU -> if (shizuku.ready) "as ${shizuku.userLabel}" else null
+        DeviceAccess.Mode.ROOT -> if (accessReady) "su" else null
+    }
 
     Column(
         Modifier.fillMaxSize().bouncyVerticalScroll(rememberScrollState()).padding(16.dp),
@@ -59,9 +83,9 @@ fun AndroidAutomationScreen(cardBg: Color, cardBorder: BorderStroke, onOpenAdbCo
     ) {
         // Status
         val (tint, title, subtitle) = when {
-            running -> Triple(QuotaGreen, "Allowed", "Agents with the Android Automation MCP can control this phone")
-            enabledInSettings -> Triple(Amber, "Not running", "The service is on but Android hasn't started it. Turn it off and on again.")
-            else -> Triple(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), "Not allowed", "Grant the permissions below to use it")
+            running -> Triple(QuotaGreen, L.common.allowed, L.settings.androidAutomation.agentsWithTheAndroidAutomationMcp)
+            enabledInSettings -> Triple(Amber, L.settings.androidAutomation.notRunning, L.settings.androidAutomation.theServiceIsOnButAndroid)
+            else -> Triple(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), L.settings.androidAutomation.notAllowed, L.settings.androidAutomation.grantThePermissionsBelowToUse)
         }
         Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = cardBg), border = cardBorder) {
             Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -81,38 +105,36 @@ fun AndroidAutomationScreen(cardBg: Color, cardBorder: BorderStroke, onOpenAdbCo
                 Icon(Icons.Outlined.WarningAmber, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    "This gives AI agents full control of your phone: they can read everything on screen (including messages and passwords " +
-                        "you can see), tap, type and open or uninstall apps. Only allow it if you trust the agents you connect, and review what they do.",
+                    L.settings.androidAutomation.thisGivesAiAgentsFullControl,
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
                 )
             }
         }
 
         // 1. Accessibility service (required)
-        StepCard(1, "Accessibility service", if (running) "Allowed" else "Required", cardBg, cardBorder, badgeColor = if (running) QuotaGreen else Amber) {
-            Hint("Reads the screen, taps, swipes, types and takes screenshots. In Accessibility settings, open \"AntiGem Android Automation\" (it may be under Installed apps or Downloaded apps) and turn it on.")
-            CheckRow("AntiGem Android Automation", running)
+        StepCard(1, L.settings.androidAutomation.accessibilityService, if (running) L.common.allowed else L.common.required, cardBg, cardBorder, badgeColor = if (running) QuotaGreen else Amber) {
+            Hint(L.settings.androidAutomation.readsTheScreenTapsSwipesTypes)
+            CheckRow(L.settings.androidAutomation.antigemAndroidAutomation, running)
             if (!running) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { AndroidAutomation.openAccessibilitySettings(context) }) { Text("Open Accessibility") }
-                    if (adbDevice != null) OutlinedButton(
+                    Button(onClick = { AndroidAutomation.openAccessibilitySettings(context) }) { Text(L.settings.androidAutomation.openAccessibility) }
+                    if (accessReady) OutlinedButton(
                         enabled = !enablingViaAdb,
                         onClick = {
                             enablingViaAdb = true; adbError = null
                             scope.launch {
-                                AndroidAutomation.enableViaAdb(context).onFailure { adbError = it.message }
+                                AndroidAutomation.enableViaShell(context).onFailure { adbError = it.message }
                                 enablingViaAdb = false
                             }
                         }
-                    ) { Text(if (enablingViaAdb) "Turning on…" else "Turn on with ADB") }
+                    ) { Text(if (enablingViaAdb) L.settings.androidAutomation.turningOn else L.settings.androidAutomation.turnOnWithLabel(accessMode.label)) }
                 }
                 adbError?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
                 Surface(shape = RoundedCornerShape(10.dp), color = Amber.copy(alpha = 0.1f)) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Switch greyed out, or \"Restricted setting\"?", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                        Text(L.settings.androidAutomation.switchGreyedOutOrRestrictedSetting, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Android 13+ blocks this for apps installed from a file. Open App info, tap ⋮ (top right) → Allow restricted settings, " +
-                                "then turn the service on. Or connect ADB and use Turn on with ADB.",
+                            L.settings.androidAutomation.android13BlocksThisForApps,
                             fontSize = 12.sp
                         )
                         TextButton(contentPadding = PaddingValues(0.dp), onClick = {
@@ -120,38 +142,37 @@ fun AndroidAutomationScreen(cardBg: Color, cardBorder: BorderStroke, onOpenAdbCo
                                 context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
                                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                             }
-                        }) { Text("Open App info") }
+                        }) { Text(L.settings.androidAutomation.openAppInfo) }
                     }
                 }
             } else {
-                OutlinedButton(onClick = { AndroidAutomation.openAccessibilitySettings(context) }) { Text("Turn off in Accessibility") }
+                OutlinedButton(onClick = { AndroidAutomation.openAccessibilitySettings(context) }) { Text(L.settings.androidAutomation.turnOffInAccessibility) }
             }
         }
 
         // 2. Screenshots come with the service on Android 11+
         val screenshots = AndroidAutomation.canTakeScreenshots()
-        StepCard(2, "Screenshots", if (screenshots && running) "Allowed" else null, cardBg, cardBorder) {
+        StepCard(2, L.settings.androidAutomation.screenshots, if (screenshots && running) L.common.allowed else null, cardBg, cardBorder) {
             Hint(
-                if (screenshots) "Included with the accessibility service. Apps that block screenshots (banking, DRM video) show up black."
-                else "Android 10 and older can't take screenshots through accessibility; connect ADB below to allow them."
+                if (screenshots) L.settings.androidAutomation.includedWithTheAccessibilityServiceApps
+                else L.settings.androidAutomation.android10AndOlderCantTake
             )
         }
 
-        // 3. ADB (optional)
-        StepCard(3, "ADB (optional)", if (adbDevice != null) "Connected" else "Optional", cardBg, cardBorder,
-            badgeColor = if (adbDevice != null) QuotaGreen else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)) {
-            Hint("Adds what accessibility can't do: pressing any key, installing, uninstalling and force-stopping apps, and running adb shell commands.")
-            CheckRow("ADB connected", adbDevice != null)
-            adbDevice?.let { Text(it.serial, fontFamily = FontFamily.Monospace, fontSize = 12.sp) }
-            if (adbDevice == null) OutlinedButton(onClick = onOpenAdbConnect) { Text("Open ADB Connect") }
+        // 3. Shell access (optional): ADB, Shizuku or root, picked in ADB Connect
+        StepCard(3, L.settings.androidAutomation.shellAccessOptional, if (accessReady) L.common.ready else L.common.optional, cardBg, cardBorder,
+            badgeColor = if (accessReady) QuotaGreen else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)) {
+            Hint(L.settings.androidAutomation.addsWhatAccessibilityCantDoPressing)
+            CheckRow("${accessMode.label} ready", accessReady)
+            accessDetail?.let { Text(it, fontFamily = FontFamily.Monospace, fontSize = 12.sp) }
+            if (!accessReady) OutlinedButton(onClick = onOpenAdbConnect) { Text(L.settings.androidAutomation.openAdbConnect) }
         }
 
         // Next step
         Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = cardBg), border = cardBorder) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Then add the MCP", fontSize = 14.5.sp, fontWeight = FontWeight.Bold)
-                Hint("In Settings → MCP Servers (Antigravity) or Claude Code → MCP servers, tap the \"Android Automation\" preset. " +
-                    "Until the accessibility service is allowed here, the server refuses to connect and the agent is told what's missing.")
+                Text(L.settings.androidAutomation.thenAddTheMcp, fontSize = 14.5.sp, fontWeight = FontWeight.Bold)
+                Hint(L.settings.androidAutomation.inSettingsMcpServersAntigravityOr)
                 Text(AndroidAutomation.tools().let { t -> (0 until t.length()).joinToString(" · ") { t.getJSONObject(it).getString("name").removePrefix("android_") } },
                     fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
             }
