@@ -276,6 +276,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun checkAgyAuthStatus(userInitiated: Boolean = false) = agyBackend.checkAgyAuthStatus(userInitiated)
     fun loginToAgyHub(force: Boolean = false) = agyBackend.loginToAgyHub(force)
     fun logoutFromAgyHub() = agyBackend.logoutFromAgyHub()
+    /** Starts the Antigravity sign-in through the bridge, even while the hub is stuck without a token. */
+    fun startAgyLoginViaBridge() = agyBackend.startAgyLoginViaBridge()
+    /**
+     * Accounts popup sign-out: the hub cannot be reached while it is stuck, so sign out through the bridge's
+     * account store, then start a fresh sign-in at once instead of waiting for the hub to report signed-out.
+     */
+    fun signOutAgyAndSignInAgain() {
+        agyBackend.signOutAgyViaBridge { err ->
+            if (err == null) agyBackend.startAgyLoginViaBridge()
+        }
+    }
     val activeInstances = agyBackend.activeInstances
     /** An Antigravity voice call is on (it keeps the screen on, minimized too). */
     private val voiceCallActive = com.example.gemini.data.voice.AgyVoiceCall.state.map { it.active }.distinctUntilChanged()
