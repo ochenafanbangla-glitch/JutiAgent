@@ -26,6 +26,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import com.example.gemini.i18n.L
 
 /**
  * Keeps Jarvis reachable while hands-free mode is on (the screen can be off and another app in front): the microphone
@@ -39,10 +40,24 @@ class JarvisService : Service() {
     private var session: MediaSession? = null
     private var clicks = 0
     private var clickJob: Job? = null
+    private var foreground = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android's promise comes first: a service started with startForegroundService must reach startForeground in
+        // time (and before it stops), or Android kills the whole app (ForegroundServiceDidNotStartInTimeException).
+        if (!foreground && !enterForeground()) {
+            if (intent?.action == null) {
+                synchronized(lock) { pending = false; stopWhenStarted = false }
+                if (JarvisController.isAttached) {
+                    JarvisController.setHandsFree(false)
+                    JarvisController.showProblem(L.jarvis.service.handsFreeCouldntStartAndroidDoesnt)
+                }
+            }
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_TALK -> {
                 if (JarvisController.isAttached) JarvisController.onMicPressed()
@@ -58,10 +73,12 @@ class JarvisService : Service() {
                 return START_NOT_STICKY
             }
         }
-        ensureChannel()
-        val n = notification("Hands-free is on", JarvisController.Phase.IDLE)
-        if (Build.VERSION.SDK_INT >= 30) startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        else startForeground(NOTIF_ID, n)
+        // a plain start (start() or Android restarting the sticky service); stop() may have come while it was on its way
+        val stopNow = synchronized(lock) { pending = false; stopWhenStarted.also { stopWhenStarted = false } }
+        if (stopNow) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         acquireWakeLock()
         startMediaSession()
         job?.cancel()
@@ -70,22 +87,42 @@ class JarvisService : Service() {
                 val active = tasks.count { it.active }
                 val needs = tasks.count { it.state.needsUser }
                 val taskLine = when {
-                    needs > 0 -> " · $needs task${if (needs == 1) "" else "s"} need${if (needs == 1) "s" else ""} you"
-                    active > 0 -> " · $active task${if (active == 1) "" else "s"} running"
+                    needs > 0 -> L.jarvis.service.countTasksNeedYou(needs)
+                    active > 0 -> L.jarvis.service.countTasksRunning(active)
                     else -> ""
                 }
                 val text = when (p) {
-                    JarvisController.Phase.LISTENING -> if (h.isNotBlank()) "Listening: $h" else "Listening…"
-                    JarvisController.Phase.THINKING -> "Working on it…$taskLine"
-                    JarvisController.Phase.SPEAKING -> "Speaking…"
-                    JarvisController.Phase.OFF -> "Jarvis is off"
+                    JarvisController.Phase.LISTENING -> if (h.isNotBlank()) L.jarvis.service.listeningH(h) else L.jarvis.service.listening
+                    JarvisController.Phase.THINKING -> L.jarvis.service.workingOnItTaskline(taskLine)
+                    JarvisController.Phase.SPEAKING -> L.jarvis.service.speaking
+                    JarvisController.Phase.OFF -> L.jarvis.service.jarvisIsOff
                     JarvisController.Phase.IDLE ->
-                        (if (JarvisPreferences.hotword.value == "phrase") "Say “${JarvisPreferences.wakePhrase.value.substringBefore(',').trim()}”" else "Tap Talk to speak") + taskLine
+                        (if (JarvisPreferences.hotword.value == "phrase") L.jarvis.service.sayPhrase(JarvisPreferences.wakePhrase.value.substringBefore(',').trim()) else L.jarvis.service.tapTalkToSpeak) + taskLine
                 }
                 runCatching { getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification(text, p)) }
             }
         }
         return START_STICKY
+    }
+
+    /**
+     * Shows the notification and becomes a microphone foreground service. False when Android refuses: on Android 14+ a
+     * microphone service can't start while AntiGem is in the background (SecurityException /
+     * ForegroundServiceStartNotAllowedException).
+     */
+    private fun enterForeground(): Boolean {
+        ensureChannel()
+        // started by the floating orb (Settings → Jarvis → Screen & look) when hands-free is off: it only listens now
+        val n = notification(if (JarvisPreferences.handsFree.value) L.jarvis.service.handsFreeIsOn else L.jarvis.service.jarvisIsListening, JarvisController.Phase.IDLE)
+        return try {
+            if (Build.VERSION.SDK_INT >= 30) startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            else startForeground(NOTIF_ID, n)
+            foreground = true
+            synchronized(lock) { running = true }
+            true
+        } catch (e: RuntimeException) {
+            false
+        }
     }
 
     /** Headset and Bluetooth buttons reach Jarvis through a media session (works while no music app holds the button). */
@@ -143,8 +180,8 @@ class JarvisService : Service() {
         if (Build.VERSION.SDK_INT < 26) return
         val nm = getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL) == null) {
-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Jarvis hands-free", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Shown while Jarvis listens for your voice"
+            nm.createNotificationChannel(NotificationChannel(CHANNEL, L.jarvis.service.jarvisHandsFree, NotificationManager.IMPORTANCE_LOW).apply {
+                description = L.jarvis.service.shownWhileJarvisListensForYour
                 setShowBadge(false)
             })
         }
@@ -157,14 +194,14 @@ class JarvisService : Service() {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), flags)
         val b = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_jarvis_mic)
-            .setContentTitle("Jarvis")
+            .setContentTitle(L.common.jarvis)
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(open)
-        if (phase == JarvisController.Phase.LISTENING) b.addAction(0, "Send", action(ACTION_SEND, 3))
-        else b.addAction(0, "Talk", action(ACTION_TALK, 1))
-        b.addAction(0, "Stop", action(ACTION_STOP, 2))
+        if (phase == JarvisController.Phase.LISTENING) b.addAction(0, L.common.send, action(ACTION_SEND, 3))
+        else b.addAction(0, L.jarvis.service.talk, action(ACTION_TALK, 1))
+        b.addAction(0, L.common.stop, action(ACTION_STOP, 2))
         return b.build()
     }
 
@@ -175,6 +212,7 @@ class JarvisService : Service() {
         runCatching { session?.isActive = false; session?.release() }
         session = null
         runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+        if (foreground) synchronized(lock) { running = false }
         super.onDestroy()
     }
 
@@ -185,11 +223,42 @@ class JarvisService : Service() {
         const val ACTION_SEND = "com.example.gemini.jarvis.SEND"
         const val ACTION_STOP = "com.example.gemini.jarvis.STOP"
 
+        // start/stop are called from any thread (the Jarvis MCP settings tool runs on a worker thread)
+        private val lock = Any()
+        /** start() was called and its onStartCommand hasn't run yet. */
+        private var pending = false
+        /** stop() came while [pending]: onStartCommand stops right after startForeground instead. */
+        private var stopWhenStarted = false
+        /** The service is up and in the foreground. */
+        private var running = false
+
         fun start(context: Context) {
-            ContextCompat.startForegroundService(context, Intent(context, JarvisService::class.java))
+            synchronized(lock) { pending = true; stopWhenStarted = false }
+            try {
+                ContextCompat.startForegroundService(context, Intent(context, JarvisService::class.java))
+            } catch (e: RuntimeException) {
+                synchronized(lock) { pending = false }
+                throw e
+            }
+        }
+
+        /** The service is up (hands-free, or a talk from the floating orb). */
+        val isRunning: Boolean get() = synchronized(lock) { running }
+
+        /**
+         * Talk from outside the app (the floating orb): starts the microphone service when it isn't up and starts
+         * listening. Android lets it use the microphone because the floating orb is on screen. Stop it with [stop].
+         */
+        fun talk(context: Context) {
+            ContextCompat.startForegroundService(context, Intent(context, JarvisService::class.java).setAction(ACTION_TALK))
         }
 
         fun stop(context: Context) {
+            synchronized(lock) {
+                // stopping before startForeground is exactly what makes Android kill the app
+                if (pending) { stopWhenStarted = true; return }
+                if (!running) return
+            }
             context.stopService(Intent(context, JarvisService::class.java))
         }
     }
