@@ -2,6 +2,7 @@ package com.example.gemini.domain.model
 
 import kotlinx.serialization.Serializable
 import java.util.UUID
+import com.example.gemini.i18n.L
 
 enum class MessageRole {
     USER,
@@ -92,7 +93,9 @@ data class ChatMessage(
     /** What the voice said while handing that request to the agent. */
     val voiceLine: String? = null,
     /** A user message: the id its project checkpoint was saved under, when the agent's transcript knows it. */
-    val checkpointKey: String? = null
+    val checkpointKey: String? = null,
+    /** A user message whose [content] the chat shows collapsed (hidden parts removed): the text as it was sent. */
+    val sentContent: String? = null
 )
 
 @Serializable
@@ -179,7 +182,9 @@ data class AiModel(
     val isDefault: Boolean = false,
     val key: String = "",
     val baseName: String = "",
-    val tier: String? = null
+    val tier: String? = null,
+    /** Whether the model reads images: false = text only (the chat warns about attached images), null = not known. */
+    val supportsImages: Boolean? = null
 ) {
     companion object {
         val DEFAULT_MODELS = emptyList<AiModel>()
@@ -192,9 +197,9 @@ data class AiModel(
             }
             val thinking = id.contains("thinking", ignoreCase = true) || id.contains("flash", ignoreCase = true) || id.contains("pro", ignoreCase = true) || id.contains("high", ignoreCase = true) || id.contains("medium", ignoreCase = true) || id.contains("low", ignoreCase = true)
             val desc = description ?: when (family) {
-                ModelFamily.CLAUDE -> "Anthropic Claude via Antigravity"
-                ModelFamily.GEMINI -> "Google Gemini via Antigravity"
-                ModelFamily.OTHER -> "Other Model via Antigravity"
+                ModelFamily.CLAUDE -> L.model.models.anthropicClaudeViaAntigravity
+                ModelFamily.GEMINI -> L.model.models.googleGeminiViaAntigravity
+                ModelFamily.OTHER -> L.model.models.otherModelViaAntigravity
             }
             var baseName = name
             var tier: String? = null
@@ -238,12 +243,14 @@ data class AiModel(
     }
 }
 
-enum class ThinkingLevel(val label: String, val tokens: Int, val description: String) {
-    OFF("Off", 0, "0 tokens • Direct response (no reasoning)"),
-    LOW("Low", 1024, "1,024 tokens (~4,000 chars) • Quick logic"),
-    MEDIUM("Med", 4096, "4,096 tokens (~16,000 chars) • Standard"),
-    HIGH("High", 8192, "8,192 tokens (~32,000 chars) • Deep thinking"),
-    CUSTOM("Custom", 0, "Custom token budget")
+enum class ThinkingLevel(private val labelText: () -> String, val tokens: Int, private val descriptionText: () -> String) {
+    OFF({ L.model.models.off }, 0, { L.model.models.n0TokensDirectResponseNoReasoning }),
+    LOW({ L.model.models.low }, 1024, { L.model.models.n1024Tokens4000Chars }),
+    MEDIUM({ L.model.models.med }, 4096, { L.model.models.n4096Tokens16000Chars }),
+    HIGH({ L.model.models.high }, 8192, { L.model.models.n8192Tokens32000Chars }),
+    CUSTOM({ L.model.models.custom }, 0, { L.model.models.customTokenBudget });
+    val label: String get() = labelText()
+    val description: String get() = descriptionText()
 }
 
 data class ThinkingPreference(
@@ -258,11 +265,11 @@ data class ThinkingPreference(
 
     val displaySummary: String
         get() = when (level) {
-            ThinkingLevel.OFF -> "Thinking: Off"
-            ThinkingLevel.LOW -> "Thinking: Low (1K)"
-            ThinkingLevel.MEDIUM -> "Thinking: Med (4K)"
-            ThinkingLevel.HIGH -> "Thinking: High (8K)"
-            ThinkingLevel.CUSTOM -> "Thinking: Custom (${activeTokens})"
+            ThinkingLevel.OFF -> L.model.models.thinkingOff
+            ThinkingLevel.LOW -> L.model.models.thinkingLow1k
+            ThinkingLevel.MEDIUM -> L.model.models.thinkingMed4k
+            ThinkingLevel.HIGH -> L.model.models.thinkingHigh8k
+            ThinkingLevel.CUSTOM -> L.model.models.thinkingCustomTokens(activeTokens)
         }
 }
 
