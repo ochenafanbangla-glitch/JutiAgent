@@ -15,6 +15,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import com.example.gemini.i18n.L
 
 /**
  * What the connected IDE bridge (local or on a server) says about itself:
@@ -109,7 +110,7 @@ object BridgeInfo {
                     _agyError.value = null
                     parseJob(o.optJSONObject("job"))?.let { if (_job.value?.running != true) _job.value = it }
                 }.onFailure {
-                    _agyError.value = "Cannot reach the bridge: ${it.message ?: it.javaClass.simpleName}"
+                    _agyError.value = L.remote.bridgeInfo.cannotReachTheBridgeValue(it.message ?: it.javaClass.simpleName)
                 }
             } finally {
                 _checking.value = false
@@ -158,9 +159,9 @@ object BridgeInfo {
                     JSONObject(r.body?.string().orEmpty())
                 }
             }
-            val o = started.getOrElse { _agyError.value = "$label failed to start: ${it.message}"; return@launch }
+            val o = started.getOrElse { _agyError.value = L.remote.bridgeInfo.labelFailedToStartMessage(label, it.message); return@launch }
             if (!o.optBoolean("success")) {
-                _agyError.value = o.optString("error").ifBlank { "$label failed to start" }
+                _agyError.value = o.optString("error").ifBlank { L.remote.bridgeInfo.labelFailedToStart(label) }
                 return@launch
             }
             _agyError.value = null
@@ -189,13 +190,28 @@ object BridgeInfo {
         if (bridge == appVersion) return 0
         // bridges built before versioning always reported a fixed "2.0.0": that is an old bridge, not a newer one
         if (bridge == LEGACY_VERSION) return -1
-        fun parts(v: String) = v.split('.', '-', '+').map { it.toIntOrNull() ?: 0 }
-        val a = parts(bridge); val b = parts(appVersion)
-        for (i in 0 until maxOf(a.size, b.size)) {
-            val x = a.getOrElse(i) { 0 }; val y = b.getOrElse(i) { 0 }
-            if (x != y) return if (x < y) -1 else 1
+        return compareVersions(bridge, appVersion)
+    }
+
+    /** Compares versions like "2.0.4" and "2.0.4-beta.2" number by number; a beta comes before its release. */
+    fun compareVersions(a: String, b: String): Int {
+        fun numbers(v: String) = v.split('.').map { part -> part.filter(Char::isDigit).toIntOrNull() ?: 0 }
+        fun compare(x: List<Int>, y: List<Int>): Int {
+            for (i in 0 until maxOf(x.size, y.size)) {
+                val p = x.getOrElse(i) { 0 }; val q = y.getOrElse(i) { 0 }
+                if (p != q) return if (p < q) -1 else 1
+            }
+            return 0
         }
-        return 0
+        val (aMain, aPre) = a.substringBefore('+').let { it.substringBefore('-') to it.substringAfter('-', "") }
+        val (bMain, bPre) = b.substringBefore('+').let { it.substringBefore('-') to it.substringAfter('-', "") }
+        compare(numbers(aMain), numbers(bMain)).let { if (it != 0) return it }
+        return when {
+            aPre == bPre -> 0
+            aPre.isEmpty() -> 1 // a is the release, b a beta of it
+            bPre.isEmpty() -> -1
+            else -> compare(numbers(aPre), numbers(bPre))
+        }
     }
 
     // -------------------------------------------------------------------------------- "Later"
