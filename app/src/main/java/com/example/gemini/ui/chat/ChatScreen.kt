@@ -3225,6 +3225,7 @@ fun ChatScreen(
             agyStatus = agyEntry,
             agyAuth = agyAuthInfo,
             onAgySignOut = { viewModel.logoutFromAgyHub() },
+            onAgySignIn = { viewModel.startAgyLoginViaBridge() },
             onAgyCancelSignIn = { viewModel.cancelAgyLogin() },
             onToggleModelEnabled = { modelId, isEnabled ->
                 viewModel.setModelEnabled(modelId, isEnabled)
@@ -3397,7 +3398,8 @@ fun ChatScreen(
             claude = claudeEntry,
             agyAuth = agyAuthInfo,
             claudeStatus = claudeStatus,
-            onAgySignOut = { viewModel.logoutFromAgyHub() },
+            onAgySignOut = { viewModel.signOutAgyAndSignInAgain() },
+            onAgySignIn = { viewModel.startAgyLoginViaBridge() },
             onAgyCancelSignIn = { viewModel.cancelAgyLogin() },
             onAgySettings = {
                 scope.launch { drawerState.close() }
