@@ -10,7 +10,8 @@ object JarvisAppGuide {
 
     private fun settingsPages(): String = runCatching {
         com.example.gemini.ui.settings.SettingsSection.values()
-            .filter { it != com.example.gemini.ui.settings.SettingsSection.MAIN && it != com.example.gemini.ui.settings.SettingsSection.CLAUDE_PAGE }
+            .filter { it != com.example.gemini.ui.settings.SettingsSection.MAIN && it != com.example.gemini.ui.settings.SettingsSection.CLAUDE_PAGE &&
+                it != com.example.gemini.ui.settings.SettingsSection.TERMUX_ONLY }
             .joinToString("\n") { "- ${it.title} (jarvis_open_settings section=${it.name.lowercase()}): ${it.subtitle}" }
     }.getOrDefault("")
 
@@ -62,7 +63,7 @@ active project is where new chats work. Git: clone, status, diffs, commit, pull 
 Jarvis can open projects and files (jarvis_ide_open_project, jarvis_ide_open_file) and search code (jarvis_ide_search_code).
 """.trim()),
             Entry("github", listOf("github", "gh", "repo", "repository", "repositories", "clone", "push", "pull", "commit", "private repo", "new repo", "git login", "git credentials"), """
-Settings → GitHub (Termux build) installs the GitHub CLI (gh) with pkg and signs in with the browser (a one-time code) or a
+Settings → GitHub (Native system) installs the GitHub CLI (gh) with pkg and signs in with the browser (a one-time code) or a
 token. After sign-in git uses that login for github.com by itself (gh auth setup-git) and gets a commit identity from the
 profile, so clone, pull, commit and push work in the terminal, the IDE and agent commands, private repositories too. The page
 shows the account and its repositories (tap one to clone and open it). In server mode it is the server's gh and git; gh must
@@ -80,11 +81,12 @@ Notes and to-do lists are on the notes screen and in the floating bubble. Agents
 """.trim()),
             Entry("appearance", listOf("theme", "dark", "light", "font", "size", "appearance", "look", "bubble", "switcher", "floating"), """
 Settings → Themes: the mode (Light, Dark or Auto), and a gallery to pick one light theme and one dark theme (light:
-Porcelain (default), Lavender, Sky (these three recommended), Sakura, Mint, Linen, Paper, Solarized Light; dark: Midnight Aurora (default),
-Obsidian, Graphite (these three recommended), Midnight, High Contrast, Amber Night (AntiGem's original dark look), Mocha, Neon City,
-Aurora, Nord, Dracula, Velvet, Deep Ocean, Ember, Forest, Sunset, Solarized Dark, plus custom ones; the chat, the IDE editor, the terminal and the code blocks all follow it). Settings → Appearance: chat font size, grouping chats by workspace,
-the chat header icons, the floating switcher (always on: its layout, items and their order) and the separate terminal app icon.
-"Vibrate when a chat finishes" is in Settings → Agents.
+Porcelain (default), Lavender, Sky (these three recommended), Sakura, Mint, Linen, Paper, Solarized Light; dark: Discord (default),
+Obsidian, Midnight Aurora (these three recommended), Graphite, Midnight, High Contrast, Amber Night (AntiGem's original dark look), Mocha, Neon City,
+Aurora, Nord, Dracula, Velvet, Deep Ocean, Ember, Forest, Sunset, Solarized Dark, plus custom ones; the chat, the IDE editor, the terminal and the code blocks all follow it). Settings → Appearance: chat font size, Group Agent Steps (on by default: runs of thinking and tool calls fold into one
+progress pill once a run has "Fold after" steps, 2+ by default, 1+ = every run; off: every step is a tile), message stats (token/cache/time under replies) on or off, the chat header icons, the floating switcher (always on: its layout, items and their order) and the separate terminal app icon.
+"Vibrate when a chat finishes" is in Settings → Agents. Grouping the chat list by project is the folder icon at the top of the
+chat list sidebar (next to Search).
 Jarvis switches with jarvis_set_setting key=theme (or theme_mode) when the user allowed app settings. New themes are made by any chat
 with the Theme MCP (Theme preset in Settings → Antigravity → MCP Servers or Claude Code → MCP): "create a neon cyberpunk dark theme".
 """.trim()),
