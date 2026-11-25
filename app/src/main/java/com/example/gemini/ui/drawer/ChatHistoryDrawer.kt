@@ -31,8 +31,10 @@ import androidx.compose.material.icons.automirrored.outlined.Login
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.outlined.AppShortcut
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Unarchive
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -86,6 +88,10 @@ import com.example.gemini.ui.components.SidebarChatListSkeleton
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
+import com.example.gemini.i18n.L
+
+/** Group key of the pinned chats when grouping by workspace (can't clash with a folder name). */
+private const val PINNED_GROUP = "\u0000pinned"
 
 @Composable
 fun ChatHistoryDrawer(
@@ -153,6 +159,15 @@ fun ChatHistoryDrawer(
         isInitialGracePeriod = false
     }
     val context = LocalContext.current
+    // the Ubuntu chroot in use: the Exit dialog asks whether it stops too (preset from its exit setting)
+    val chrootInUse = remember(showExitConfirmDialog) { com.example.gemini.data.local.chroot.ChrootManager.isActiveNow() }
+    var stopChrootOnExit by remember(showExitConfirmDialog) {
+        mutableStateOf(com.example.gemini.data.local.chroot.ChrootManager.isActiveNow() &&
+            com.example.gemini.data.local.chroot.ChrootManager.exitBehavior(context) != com.example.gemini.data.local.chroot.ChrootExitBehavior.KEEP_RUNNING)
+    }
+    // pinned chats (app level, by conversation id) sit at the top of the list
+    remember { com.example.gemini.data.preferences.PinnedChats.init(context) }
+    val pinnedIds by com.example.gemini.data.preferences.PinnedChats.ids.collectAsState()
 
     var agentFilter by remember { mutableStateOf<com.example.gemini.domain.model.AgentKind?>(null) }
     val visibleAgents = remember(enabledAgents, conversations) {
@@ -204,11 +219,12 @@ fun ChatHistoryDrawer(
     }
 
     // Top-level conversations (conversations without a valid parent in the list)
-    val topLevelChats = remember(filtered, allFilteredIds) {
+    // pinned ones first (a stable sort: both parts keep their usual newest-first order)
+    val topLevelChats = remember(filtered, allFilteredIds, pinnedIds) {
         filtered.filter { conv ->
             val pId = conv.parentConversationId
             pId == null || pId == conv.id || !allFilteredIds.contains(pId)
-        }
+        }.sortedByDescending { it.id in pinnedIds }
     }
 
     var expandedParentIds by remember { mutableStateOf(setOf<String>()) }
@@ -241,11 +257,14 @@ fun ChatHistoryDrawer(
         }
     }
 
-    val grouped = remember(topLevelChats) {
+    // grouped by workspace: pinned chats get their own "Pinned" group above the workspaces
+    val grouped = remember(topLevelChats, pinnedIds) {
         topLevelChats.groupBy { conv ->
-            if (conv.workspaceUri.isNotBlank()) {
+            if (conv.id in pinnedIds) {
+                PINNED_GROUP
+            } else if (conv.workspaceUri.isNotBlank()) {
                 val clean = conv.workspaceUri.removePrefix("file://").trimEnd('/')
-                java.io.File(clean).name.ifBlank { "Workspace" }
+                java.io.File(clean).name.ifBlank { L.common.workspace }
             } else {
                 "General"
             }
@@ -343,11 +362,11 @@ fun ChatHistoryDrawer(
         val (inst, title) = instanceToTerminate!!
         AlertDialog(
             onDismissRequest = { instanceToTerminate = null },
-            title = { Text("Active CLI Process", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+            title = { Text(L.drawer.chatHistoryDrawer.activeCliProcess, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
             text = {
                 Column {
                     Text(
-                        text = "A live Antigravity CLI process is running in the background for this chat:",
+                        text = L.drawer.chatHistoryDrawer.aLiveAntigravityCliProcessIs,
                         fontSize = 13.5.sp,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -358,17 +377,17 @@ fun ChatHistoryDrawer(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
-                            Text("Chat: $title", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            Text("Model: ${inst.model}", fontSize = 12.sp)
-                            Text("Uptime: ${inst.uptimeSeconds}s", fontSize = 12.sp)
+                            Text(L.drawer.chatHistoryDrawer.chatTitle(title), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text(L.drawer.chatHistoryDrawer.modelModel(inst.model), fontSize = 12.sp)
+                            Text(L.drawer.chatHistoryDrawer.uptimeUptimesecondsS(inst.uptimeSeconds), fontSize = 12.sp)
                             if (inst.pid > 0) {
-                                Text("PID: ${inst.pid}", fontSize = 12.sp)
+                                Text(L.drawer.chatHistoryDrawer.pidPid(inst.pid), fontSize = 12.sp)
                             }
                         }
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "Terminate this instance to immediately free RAM?",
+                        text = L.drawer.chatHistoryDrawer.terminateThisInstanceToImmediatelyFree,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
@@ -383,12 +402,12 @@ fun ChatHistoryDrawer(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("Terminate & Free RAM", fontSize = 13.sp)
+                    Text(L.drawer.chatHistoryDrawer.terminateFreeRam, fontSize = 13.sp)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { instanceToTerminate = null }) {
-                    Text("Keep Running", fontSize = 13.sp)
+                    Text(L.drawer.chatHistoryDrawer.keepRunning, fontSize = 13.sp)
                 }
             }
         )
@@ -399,14 +418,14 @@ fun ChatHistoryDrawer(
             onDismissRequest = { showSigningInProgressDialog = false },
             title = {
                 Text(
-                    text = "Sign-In in Progress",
+                    text = L.drawer.chatHistoryDrawer.signInInProgress,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
             },
             text = {
                 Text(
-                    text = "A sign-in request is currently pending. If you already completed authentication in your browser, tap 'Check Status'. You can also restart sign-in if needed.",
+                    text = L.drawer.chatHistoryDrawer.aSignInRequestIsCurrently,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -421,7 +440,7 @@ fun ChatHistoryDrawer(
                             onCheckAuth()
                         }
                     ) {
-                        Text("Check Status")
+                        Text(L.drawer.chatHistoryDrawer.checkStatus)
                     }
                     Button(
                         onClick = {
@@ -429,7 +448,7 @@ fun ChatHistoryDrawer(
                             onLogin()
                         }
                     ) {
-                        Text("Sign In Again")
+                        Text(L.drawer.chatHistoryDrawer.signInAgain)
                     }
                 }
             },
@@ -443,10 +462,10 @@ fun ChatHistoryDrawer(
                             onCancelLogin()
                         }
                     ) {
-                        Text("Later")
+                        Text(L.common.later)
                     }
                     TextButton(onClick = { showSigningInProgressDialog = false }) {
-                        Text("Cancel")
+                        Text(L.common.cancel)
                     }
                 }
             }
@@ -474,26 +493,52 @@ fun ChatHistoryDrawer(
             },
             title = {
                 Text(
-                    text = "Exit AntiGem?",
+                    text = L.drawer.chatHistoryDrawer.exitAntigem,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
             },
             text = {
-                Text(
-                    text = "Do you want to exit the app? This will stop all active background services, servers, and terminals.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    lineHeight = 20.sp
-                )
+                Column {
+                    Text(
+                        text = if (chrootInUse) L.drawer.chatHistoryDrawer.doYouWantToExitThe
+                        else L.drawer.chatHistoryDrawer.doYouWantToExitThe2,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 20.sp
+                    )
+                    // the Ubuntu chroot runs outside the app: keep it working, or stop it too (this exit only)
+                    if (chrootInUse) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 8.dp).clickable { stopChrootOnExit = !stopChrootOnExit }
+                        ) {
+                            Checkbox(checked = stopChrootOnExit, onCheckedChange = { stopChrootOnExit = it })
+                            Text(
+                                if (stopChrootOnExit) L.drawer.chatHistoryDrawer.alsoStopTheUbuntuChrootIts
+                                else L.drawer.chatHistoryDrawer.alsoStopTheUbuntuChrootOff,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         showExitConfirmDialog = false
+                        if (chrootInUse) {
+                            val saved = com.example.gemini.data.local.chroot.ChrootManager.exitBehavior(context)
+                            com.example.gemini.data.local.chroot.ChrootManager.exitOverride = when {
+                                !stopChrootOnExit -> com.example.gemini.data.local.chroot.ChrootExitBehavior.KEEP_RUNNING
+                                saved != com.example.gemini.data.local.chroot.ChrootExitBehavior.KEEP_RUNNING -> saved
+                                else -> com.example.gemini.data.local.chroot.ChrootExitBehavior.STOP_ALL
+                            }
+                        }
                         try {
-                            com.example.gemini.data.service.TermuxService.stop(context)
+                            com.example.gemini.data.service.AntiGemService.stop(context)
                         } catch (e: Exception) {
                             Log.e("ChatHistoryDrawer", "Error stopping service", e)
                             try {
@@ -526,7 +571,7 @@ fun ChatHistoryDrawer(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Exit App", fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
+                    Text(L.drawer.chatHistoryDrawer.exitApp, fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
                 }
             },
             dismissButton = {
@@ -534,7 +579,7 @@ fun ChatHistoryDrawer(
                     onClick = { showExitConfirmDialog = false },
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text("Cancel", fontSize = 13.5.sp)
+                    Text(L.common.cancel, fontSize = 13.5.sp)
                 }
             },
             containerColor = MaterialTheme.colorScheme.surface,
@@ -564,7 +609,7 @@ fun ChatHistoryDrawer(
             },
             title = {
                 Text(
-                    text = "Delete Conversation?",
+                    text = L.drawer.chatHistoryDrawer.deleteConversation,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -572,7 +617,7 @@ fun ChatHistoryDrawer(
             },
             text = {
                 Text(
-                    text = "Are you sure you want to delete \"${targetConv.title.ifBlank { "this conversation" }}\"? This will permanently remove all messages and trajectory data.",
+                    text = L.drawer.chatHistoryDrawer.areYouSureYouWantTo(targetConv.title.ifBlank { L.drawer.chatHistoryDrawer.thisConversation }),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 20.sp
@@ -583,6 +628,7 @@ fun ChatHistoryDrawer(
                     onClick = {
                         val id = targetConv.id
                         conversationToDelete = null
+                        com.example.gemini.data.preferences.PinnedChats.setPinned(id, false)
                         onDeleteConversation(id)
                     },
                     colors = ButtonDefaults.buttonColors(
@@ -597,7 +643,7 @@ fun ChatHistoryDrawer(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Delete", fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
+                    Text(L.common.delete, fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
                 }
             },
             dismissButton = {
@@ -605,7 +651,7 @@ fun ChatHistoryDrawer(
                     onClick = { conversationToDelete = null },
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text("Cancel", fontSize = 13.5.sp)
+                    Text(L.common.cancel, fontSize = 13.5.sp)
                 }
             },
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -621,7 +667,9 @@ fun ChatHistoryDrawer(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp)
+                // top 6dp (+2dp on the row, +18dp half the 36dp row) centers the header 26dp under the status bar,
+                // the same line as the chat's 52dp top bar title and icons
+                .padding(start = 16.dp, end = 16.dp, bottom = 16.dp, top = 6.dp)
         ) {
             // ---------------- header: brand on the left, power + new chat on the right ----------------
             Row(
@@ -657,7 +705,7 @@ fun ChatHistoryDrawer(
                         )
                     }
                 }
-                HeaderIcon(Icons.Default.Search, "Search", isSearchActive || searchQuery.isNotBlank()) {
+                HeaderIcon(Icons.Default.Search, L.common.search, isSearchActive || searchQuery.isNotBlank()) {
                     isSearchActive = !isSearchActive
                     if (!isSearchActive) {
                         searchQuery = ""
@@ -666,12 +714,12 @@ fun ChatHistoryDrawer(
                 }
                 HeaderIcon(
                     if (groupByWorkspace) Icons.Default.Folder else Icons.Outlined.FolderOpen,
-                    if (groupByWorkspace) "Disable Workspace Grouping" else "Group by Workspace",
+                    if (groupByWorkspace) L.drawer.chatHistoryDrawer.disableWorkspaceGrouping else L.drawer.chatHistoryDrawer.groupByWorkspace,
                     groupByWorkspace
                 ) { onToggleGroupByWorkspace(!groupByWorkspace) }
                 HeaderIcon(
                     Icons.Outlined.Archive,
-                    if (showArchived) "Show Chats" else "Show Archived Chats",
+                    if (showArchived) L.drawer.chatHistoryDrawer.showChats else L.drawer.chatHistoryDrawer.showArchivedChats,
                     showArchived
                 ) { onToggleShowArchived(!showArchived) }
 
@@ -685,7 +733,7 @@ fun ChatHistoryDrawer(
                 ) {
                     Icon(
                         imageVector = Icons.Default.PowerSettingsNew,
-                        contentDescription = "Exit App",
+                        contentDescription = L.drawer.chatHistoryDrawer.exitApp,
                         tint = MaterialTheme.colorScheme.error.copy(alpha = 0.75f),
                         modifier = Modifier.size(19.dp)
                     )
@@ -748,7 +796,7 @@ fun ChatHistoryDrawer(
                                 Box(contentAlignment = Alignment.CenterStart) {
                                     if (searchQuery.isEmpty()) {
                                         Text(
-                                            text = "Search chats",
+                                            text = L.drawer.chatHistoryDrawer.searchChats,
                                             fontSize = 14.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
                                         )
@@ -767,7 +815,7 @@ fun ChatHistoryDrawer(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
-                                    contentDescription = "Clear",
+                                    contentDescription = L.common.clear,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                     modifier = Modifier.size(16.dp)
                                 )
@@ -780,7 +828,7 @@ fun ChatHistoryDrawer(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Tune,
-                                contentDescription = "Advanced Search",
+                                contentDescription = L.drawer.chatHistoryDrawer.advancedSearch,
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
                                 modifier = Modifier.size(17.dp)
                             )
@@ -803,12 +851,12 @@ fun ChatHistoryDrawer(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "${filtered.size} chat${if (filtered.size != 1) "s" else ""} found",
+                        text = L.drawer.chatHistoryDrawer.filteredcountChatValueFound(filtered.size, if (filtered.size != 1) "s" else ""),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     )
                     Text(
-                        text = "Advanced Search ›",
+                        text = L.drawer.chatHistoryDrawer.advancedSearch2,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = ClaudeTerracotta,
@@ -833,13 +881,13 @@ fun ChatHistoryDrawer(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     val allItems = buildList {
-                        add(null to "All")
+                        add(null to L.drawer.chatHistoryDrawer.all)
                         visibleAgents.forEach { agent ->
                             val label = when (agent) {
-                                com.example.gemini.domain.model.AgentKind.AGY -> "Antigravity"
-                                com.example.gemini.domain.model.AgentKind.CLAUDE -> "Claude"
-                                com.example.gemini.domain.model.AgentKind.OPENCODE -> "OpenCode"
-                                com.example.gemini.domain.model.AgentKind.CODEX -> "Codex"
+                                com.example.gemini.domain.model.AgentKind.AGY -> L.common.antigravity
+                                com.example.gemini.domain.model.AgentKind.CLAUDE -> L.common.claude
+                                com.example.gemini.domain.model.AgentKind.OPENCODE -> L.drawer.chatHistoryDrawer.opencode
+                                com.example.gemini.domain.model.AgentKind.CODEX -> L.common.codex
                             }
                             add(agent to label)
                         }
@@ -872,7 +920,7 @@ fun ChatHistoryDrawer(
                             com.example.gemini.ui.jarvis.JarvisBotIcon(15.dp, if (jarvisFilter) jarvisAccent else jarvisAccent.copy(alpha = 0.7f))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "Jarvis",
+                                text = L.common.jarvis,
                                 fontSize = 11.5.sp,
                                 fontWeight = if (jarvisFilter) FontWeight.SemiBold else FontWeight.Normal,
                                 color = if (jarvisFilter) jarvisAccent else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
@@ -898,14 +946,14 @@ fun ChatHistoryDrawer(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Archived chats · ${topLevelChats.size}",
+                        text = L.drawer.chatHistoryDrawer.archivedChatsToplevelchatscount(topLevelChats.size),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = ClaudeTerracotta,
                         modifier = Modifier.weight(1f)
                     )
                     Text(
-                        text = "Back to chats",
+                        text = L.drawer.chatHistoryDrawer.backToChats,
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                         modifier = Modifier
@@ -958,14 +1006,14 @@ fun ChatHistoryDrawer(
                             verticalArrangement = Arrangement.Center
                         ) {
                             Text(
-                                text = "Unable to load chats",
+                                text = L.drawer.chatHistoryDrawer.unableToLoadChats,
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = errorMessage ?: "Connection error",
+                                text = errorMessage ?: L.drawer.chatHistoryDrawer.connectionError,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -977,7 +1025,7 @@ fun ChatHistoryDrawer(
                                 shape = RoundedCornerShape(8.dp),
                                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                             ) {
-                                Text("Retry", fontSize = 12.5.sp)
+                                Text(L.common.retry, fontSize = 12.5.sp)
                             }
                         }
                     }
@@ -990,10 +1038,10 @@ fun ChatHistoryDrawer(
                             contentAlignment = Alignment.TopCenter
                         ) {
                             Text(
-                                text = if (searchQuery.isNotBlank()) "No ${if (showArchived) "archived " else ""}chats found matching \"$searchQuery\""
-                                    else if (showArchived) "No archived chats. Archive a chat from its ⋮ menu to keep it here, out of the main list."
-                                    else if (jarvisFilter) "No Jarvis chats yet. Start one above: type a big job and Jarvis plans it, runs it with teams of agents and keeps going until it's done."
-                                    else "No recent chats",
+                                text = if (searchQuery.isNotBlank()) L.drawer.chatHistoryDrawer.noValueChatsFoundMatchingSearchquery(if (showArchived) "archived " else "", searchQuery)
+                                    else if (showArchived) L.drawer.chatHistoryDrawer.noArchivedChatsArchiveAChat
+                                    else if (jarvisFilter) L.drawer.chatHistoryDrawer.noJarvisChatsYetStartOne
+                                    else L.drawer.chatHistoryDrawer.noRecentChats,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                                 modifier = Modifier.padding(horizontal = 24.dp),
                                 fontSize = 13.5.sp,
@@ -1054,6 +1102,10 @@ fun ChatHistoryDrawer(
                                         },
                                         onForkConversation = onForkConversation,
                                         onRequestDelete = { conversationToDelete = it },
+                                        isPinned = item.depth == 0 && conv.id in pinnedIds,
+                                        onTogglePin = if (item.depth == 0) {
+                                            { com.example.gemini.data.preferences.PinnedChats.setPinned(conv.id, conv.id !in pinnedIds) }
+                                        } else null,
                                         claudeActions = claudeActions,
                                         onTerminateInstance = { inst, title ->
                                             instanceToTerminate = inst to title
@@ -1083,14 +1135,22 @@ fun ChatHistoryDrawer(
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Icon(
-                                                imageVector = if (groupName == "General") Icons.Outlined.Public else Icons.Default.Folder,
+                                                imageVector = when (groupName) {
+                                                    PINNED_GROUP -> Icons.Outlined.PushPin
+                                                    "General" -> Icons.Outlined.Public
+                                                    else -> Icons.Default.Folder
+                                                },
                                                 contentDescription = null,
                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                                                 modifier = Modifier.size(15.dp)
                                             )
                                             Spacer(modifier = Modifier.width(7.dp))
                                             Text(
-                                                text = groupName,
+                                                text = when (groupName) {
+                                                    PINNED_GROUP -> L.drawer.chatHistoryDrawer.pinned
+                                                    "General" -> L.drawer.chatHistoryDrawer.general // group key stays English
+                                                    else -> groupName
+                                                },
                                                 fontSize = 13.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
@@ -1164,6 +1224,10 @@ fun ChatHistoryDrawer(
                                             },
                                             onForkConversation = onForkConversation,
                                             onRequestDelete = { conversationToDelete = it },
+                                            isPinned = item.depth == 0 && conv.id in pinnedIds,
+                                            onTogglePin = if (item.depth == 0) {
+                                                { com.example.gemini.data.preferences.PinnedChats.setPinned(conv.id, conv.id !in pinnedIds) }
+                                            } else null,
                                             claudeActions = claudeActions,
                                             onTerminateInstance = { inst, title ->
                                                 instanceToTerminate = inst to title
@@ -1185,7 +1249,7 @@ fun ChatHistoryDrawer(
                                                     .padding(horizontal = 4.dp, vertical = 2.dp)
                                             ) {
                                                 Text(
-                                                    text = if (isExpanded) "Show less" else "Show ${chats.size - 5} more",
+                                                    text = if (isExpanded) L.drawer.chatHistoryDrawer.showLess else L.drawer.chatHistoryDrawer.showValueMore(chats.size - 5),
                                                     fontSize = 11.5.sp,
                                                     fontWeight = FontWeight.Medium,
                                                     color = ClaudeTerracotta
@@ -1229,7 +1293,7 @@ fun ChatHistoryDrawer(
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Settings,
-                        contentDescription = "Settings",
+                        contentDescription = L.common.settings,
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         modifier = Modifier.padding(8.dp).size(20.dp)
                     )
@@ -1245,7 +1309,7 @@ fun ChatHistoryDrawer(
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.Palette,
-                            contentDescription = "Themes",
+                            contentDescription = L.common.themes,
                             tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                             modifier = Modifier.padding(8.dp).size(20.dp)
                         )
@@ -1262,7 +1326,7 @@ fun ChatHistoryDrawer(
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Apps,
-                        contentDescription = "Mini Apps",
+                        contentDescription = L.drawer.chatHistoryDrawer.miniApps,
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         modifier = Modifier.padding(8.dp).size(20.dp)
                     )
@@ -1295,7 +1359,7 @@ fun ChatHistoryDrawer(
                             )
                             Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                text = "Signing In...",
+                                text = L.drawer.chatHistoryDrawer.signingIn,
                                 fontSize = 11.5.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = ClaudeTerracotta
@@ -1324,7 +1388,7 @@ fun ChatHistoryDrawer(
                                             .data(parseProfileAvatarModel(authInfo.profilePictureUrl))
                                             .crossfade(true)
                                             .build(),
-                                        contentDescription = "Profile Picture",
+                                        contentDescription = L.drawer.chatHistoryDrawer.profilePicture,
                                         modifier = Modifier
                                             .size(24.dp)
                                             .clip(CircleShape),
@@ -1395,12 +1459,12 @@ fun ChatHistoryDrawer(
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Outlined.Login,
-                                    contentDescription = "Sign In",
+                                    contentDescription = L.drawer.chatHistoryDrawer.signIn,
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = "Sign In",
+                                    text = L.drawer.chatHistoryDrawer.signIn,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -1536,6 +1600,10 @@ private fun ChatHistoryItemRow(
     onForkConversation: (String) -> Unit,
     onRequestDelete: (Conversation) -> Unit,
     onTerminateInstance: (com.example.gemini.data.remote.AgyActiveInstance, String) -> Unit,
+    /** Pinned to the top of the list: a small pin shows next to the time. */
+    isPinned: Boolean = false,
+    /** Pins / unpins from the ⋮ menu; null (sub-agent rows) hides the item. */
+    onTogglePin: (() -> Unit)? = null,
     claudeActions: ClaudeDrawerActions? = null
 ) {
     val isSubagent = depth > 0
@@ -1573,7 +1641,7 @@ private fun ChatHistoryItemRow(
             Box(contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.CallSplit,
-                    contentDescription = "Subagent",
+                    contentDescription = L.drawer.chatHistoryDrawer.subagent,
                     tint = if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     modifier = Modifier.size(15.dp)
                 )
@@ -1599,7 +1667,7 @@ private fun ChatHistoryItemRow(
                 } else Icon(
                     // an Antigravity cloud chat (Remote Agents) shows a cloud
                     imageVector = if (conv.isCloud) Icons.Outlined.Cloud else Icons.Outlined.ChatBubbleOutline,
-                    contentDescription = if (conv.isCloud) "Cloud chat" else if (isClaudeChat) "Claude Code chat" else if (isOpenCodeChat) "OpenCode chat" else if (isCodexChat) "Codex chat" else null,
+                    contentDescription = if (conv.isCloud) L.drawer.chatHistoryDrawer.cloudChat else if (isClaudeChat) L.drawer.chatHistoryDrawer.claudeCodeChat else if (isOpenCodeChat) L.drawer.chatHistoryDrawer.opencodeChat else if (isCodexChat) L.drawer.chatHistoryDrawer.codexChat else null,
                     tint = when {
                         conv.isCloud -> com.example.gemini.theme.GeminiBlue.copy(alpha = if (isSelected) 1f else 0.85f)
                         isClaudeChat -> com.example.gemini.ui.components.ClaudeAccent.copy(alpha = if (isSelected) 1f else 0.85f)
@@ -1669,7 +1737,7 @@ private fun ChatHistoryItemRow(
                             Spacer(modifier = Modifier.width(2.dp))
                             Icon(
                                 imageVector = if (isSubagentsExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                contentDescription = if (isSubagentsExpanded) "Collapse subagents" else "Expand subagents",
+                                contentDescription = if (isSubagentsExpanded) L.drawer.chatHistoryDrawer.collapseSubagents else L.drawer.chatHistoryDrawer.expandSubagents,
                                 tint = if (isSubagentsExpanded) ClaudeTerracotta else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(13.dp)
                             )
@@ -1677,6 +1745,14 @@ private fun ChatHistoryItemRow(
                     }
                 }
 
+                if (isPinned) {
+                    Icon(
+                        imageVector = Icons.Outlined.PushPin,
+                        contentDescription = L.drawer.chatHistoryDrawer.pinned,
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
                 val timeStr = formatRelativeTime(conv.updatedAt)
                 if (timeStr.isNotBlank()) {
                     Text(
@@ -1712,7 +1788,7 @@ private fun ChatHistoryItemRow(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "RUNNING",
+                        text = L.drawer.chatHistoryDrawer.running,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
                         color = com.example.gemini.theme.AppColors.success
@@ -1745,7 +1821,7 @@ private fun ChatHistoryItemRow(
             var newTitle by remember { mutableStateOf(conv.title) }
             AlertDialog(
                 onDismissRequest = { showRename = false },
-                title = { Text("Rename chat", fontWeight = FontWeight.Bold) },
+                title = { Text(L.drawer.chatHistoryDrawer.renameChat, fontWeight = FontWeight.Bold) },
                 text = {
                     OutlinedTextField(value = newTitle, onValueChange = { newTitle = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 },
@@ -1753,9 +1829,9 @@ private fun ChatHistoryItemRow(
                     TextButton(onClick = {
                         claudeActions.rename(conv.id, newTitle)
                         showRename = false
-                    }, enabled = newTitle.isNotBlank()) { Text("Save") }
+                    }, enabled = newTitle.isNotBlank()) { Text(L.common.save) }
                 },
-                dismissButton = { TextButton(onClick = { showRename = false }) { Text("Cancel") } }
+                dismissButton = { TextButton(onClick = { showRename = false }) { Text(L.common.cancel) } }
             )
         }
 
@@ -1767,7 +1843,7 @@ private fun ChatHistoryItemRow(
             ) {
                 Icon(
                     imageVector = Icons.Default.MoreVert,
-                    contentDescription = "Options",
+                    contentDescription = L.common.options,
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                     modifier = Modifier.size(17.dp)
                 )
@@ -1781,8 +1857,44 @@ private fun ChatHistoryItemRow(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
                 modifier = Modifier.widthIn(min = 210.dp)
             ) {
+                if (onTogglePin != null) {
+                    DropdownMenuItem(
+                        text = { Text(if (isPinned) L.drawer.chatHistoryDrawer.unpin else L.drawer.chatHistoryDrawer.pinToTop, fontSize = 13.5.sp) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.PushPin,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onTogglePin()
+                            AppToastHelper.showToast(if (isPinned) L.drawer.chatHistoryDrawer.chatUnpinned else L.drawer.chatHistoryDrawer.chatPinned, ChatToastType.SUCCESS)
+                        }
+                    )
+                }
+                if (!conv.readOnly && conv.parentConversationId == null) {
+                    // an icon on the home screen that opens this chat (Settings → Home screen has widgets too)
+                    DropdownMenuItem(
+                        text = { Text(L.common.addToHomeScreen, fontSize = 13.5.sp) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.AppShortcut,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            com.example.gemini.data.homescreen.HomeShortcuts.pinChat(context, conv.id, conv.agent, conv.title)
+                        }
+                    )
+                }
                 DropdownMenuItem(
-                    text = { Text("Copy Conversation ID", fontSize = 13.5.sp) },
+                    text = { Text(L.drawer.chatHistoryDrawer.copyConversationId, fontSize = 13.5.sp) },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Outlined.ContentCopy,
@@ -1794,11 +1906,11 @@ private fun ChatHistoryItemRow(
                     onClick = {
                         menuExpanded = false
                         clipboardManager.setText(AnnotatedString(conv.id))
-                        AppToastHelper.showToast("Conversation ID copied", ChatToastType.SUCCESS)
+                        AppToastHelper.showToast(L.drawer.chatHistoryDrawer.conversationIdCopied, ChatToastType.SUCCESS)
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Fork Conversation", fontSize = 13.5.sp) },
+                    text = { Text(L.drawer.chatHistoryDrawer.forkConversation, fontSize = 13.5.sp) },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.CallSplit,
@@ -1814,7 +1926,7 @@ private fun ChatHistoryItemRow(
                 )
                 if (claudeActions != null) {  // every agent: AGY renames go to the daemon annotations
                     DropdownMenuItem(
-                        text = { Text("Rename", fontSize = 13.5.sp) },
+                        text = { Text(L.common.rename, fontSize = 13.5.sp) },
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Outlined.Edit,
@@ -1831,7 +1943,7 @@ private fun ChatHistoryItemRow(
                 }
                 if (isClaudeConv && claudeActions != null) {
                     DropdownMenuItem(
-                        text = { Text("Restart chat", fontSize = 13.5.sp) },
+                        text = { Text(L.drawer.chatHistoryDrawer.restartChat, fontSize = 13.5.sp) },
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Outlined.Refresh,
@@ -1853,7 +1965,7 @@ private fun ChatHistoryItemRow(
                     modifier = Modifier.padding(vertical = 4.dp)
                 )
                 DropdownMenuItem(
-                    text = { Text("Export Markdown (.md)", fontSize = 13.5.sp) },
+                    text = { Text(L.drawer.chatHistoryDrawer.exportMarkdownMd, fontSize = 13.5.sp) },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Outlined.Description,
@@ -1864,7 +1976,7 @@ private fun ChatHistoryItemRow(
                     },
                     onClick = {
                         menuExpanded = false
-                        com.example.gemini.ui.components.AppToastHelper.showToast("Exporting Markdown...", com.example.gemini.ui.components.ChatToastType.INFO)
+                        com.example.gemini.ui.components.AppToastHelper.showToast(L.drawer.chatHistoryDrawer.exportingMarkdown, com.example.gemini.ui.components.ChatToastType.INFO)
                         scope.launch(Dispatchers.IO) {
                             ConversationExportHelper.exportConversation(
                                 context = context,
@@ -1878,7 +1990,7 @@ private fun ChatHistoryItemRow(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Export Standalone HTML", fontSize = 13.5.sp) },
+                    text = { Text(L.drawer.chatHistoryDrawer.exportStandaloneHtml, fontSize = 13.5.sp) },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Outlined.Code,
@@ -1889,7 +2001,7 @@ private fun ChatHistoryItemRow(
                     },
                     onClick = {
                         menuExpanded = false
-                        com.example.gemini.ui.components.AppToastHelper.showToast("Exporting HTML...", com.example.gemini.ui.components.ChatToastType.INFO)
+                        com.example.gemini.ui.components.AppToastHelper.showToast(L.drawer.chatHistoryDrawer.exportingHtml, com.example.gemini.ui.components.ChatToastType.INFO)
                         scope.launch(Dispatchers.IO) {
                             ConversationExportHelper.exportConversation(
                                 context = context,
@@ -1903,7 +2015,7 @@ private fun ChatHistoryItemRow(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Share", fontSize = 13.5.sp) },
+                    text = { Text(L.common.share, fontSize = 13.5.sp) },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Outlined.Share,
@@ -1914,7 +2026,7 @@ private fun ChatHistoryItemRow(
                     },
                     onClick = {
                         menuExpanded = false
-                        com.example.gemini.ui.components.AppToastHelper.showToast("Preparing .antigem share...", com.example.gemini.ui.components.ChatToastType.INFO)
+                        com.example.gemini.ui.components.AppToastHelper.showToast(L.drawer.chatHistoryDrawer.preparingAntigemShare, com.example.gemini.ui.components.ChatToastType.INFO)
                         scope.launch(Dispatchers.IO) {
                             ConversationShareHelper.shareConversation(
                                 context = context,
@@ -1932,7 +2044,7 @@ private fun ChatHistoryItemRow(
                 )
                 if (claudeActions != null) {
                     DropdownMenuItem(
-                        text = { Text(if (conv.archived) "Unarchive" else "Archive", fontSize = 13.5.sp) },
+                        text = { Text(if (conv.archived) L.drawer.chatHistoryDrawer.unarchive else L.drawer.chatHistoryDrawer.archive, fontSize = 13.5.sp) },
                         leadingIcon = {
                             Icon(
                                 imageVector = if (conv.archived) Icons.Outlined.Unarchive else Icons.Outlined.Archive,
@@ -1944,14 +2056,14 @@ private fun ChatHistoryItemRow(
                         onClick = {
                             menuExpanded = false
                             claudeActions.archive(conv.id, !conv.archived)
-                            AppToastHelper.showToast(if (conv.archived) "Chat unarchived" else "Chat archived", ChatToastType.SUCCESS)
+                            AppToastHelper.showToast(if (conv.archived) L.drawer.chatHistoryDrawer.chatUnarchived else L.drawer.chatHistoryDrawer.chatArchived, ChatToastType.SUCCESS)
                         }
                     )
                 }
                 DropdownMenuItem(
                     text = {
                         Text(
-                            "Delete Conversation",
+                            L.drawer.chatHistoryDrawer.deleteConversation2,
                             fontSize = 13.5.sp,
                             color = MaterialTheme.colorScheme.error
                         )
@@ -1990,7 +2102,7 @@ fun SearchChatsDialog(
         conversations.forEach { conv ->
             if (conv.workspaceUri.isNotBlank()) {
                 val clean = conv.workspaceUri.removePrefix("file://").trimEnd('/')
-                val name = java.io.File(clean).name.ifBlank { "Workspace" }
+                val name = java.io.File(clean).name.ifBlank { L.common.workspace }
                 if (!list.contains(name)) list.add(name)
             }
         }
@@ -2011,7 +2123,7 @@ fun SearchChatsDialog(
                 "All" -> true
                 else -> {
                     val clean = conv.workspaceUri.removePrefix("file://").trimEnd('/')
-                    val name = java.io.File(clean).name.ifBlank { "Workspace" }
+                    val name = java.io.File(clean).name.ifBlank { L.common.workspace }
                     name.equals(selectedWorkspaceFilter, ignoreCase = true)
                 }
             }
@@ -2072,13 +2184,13 @@ fun SearchChatsDialog(
                         }
                         Column {
                             Text(
-                                text = "Search Conversations",
+                                text = L.drawer.chatHistoryDrawer.searchConversations,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "${conversations.size} total chats indexed",
+                                text = L.drawer.chatHistoryDrawer.conversationscountTotalChatsIndexed(conversations.size),
                                 fontSize = 11.5.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
@@ -2091,7 +2203,7 @@ fun SearchChatsDialog(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
+                            contentDescription = L.common.close,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                             modifier = Modifier.size(18.dp)
                         )
@@ -2141,7 +2253,7 @@ fun SearchChatsDialog(
                             decorationBox = { innerTextField ->
                                 if (query.isEmpty()) {
                                     Text(
-                                        text = "Search by title, topic, or model...",
+                                        text = L.drawer.chatHistoryDrawer.searchByTitleTopicOrModel,
                                         fontSize = 13.5.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                                     )
@@ -2156,7 +2268,7 @@ fun SearchChatsDialog(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
-                                    contentDescription = "Clear",
+                                    contentDescription = L.common.clear,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(15.dp)
                                 )
@@ -2194,7 +2306,13 @@ fun SearchChatsDialog(
                                 .clickable { selectedTimeFilter = timeLabel }
                         ) {
                             Text(
-                                text = timeLabel,
+                                // the filter keys stay English (compared above); only the shown label is translated
+                                text = when (timeLabel) {
+                                    "Today" -> L.drawer.chatHistoryDrawer.today
+                                    "Past 7d" -> L.drawer.chatHistoryDrawer.past7d
+                                    "Past 30d" -> L.drawer.chatHistoryDrawer.past30d
+                                    else -> L.drawer.chatHistoryDrawer.all
+                                },
                                 fontSize = 11.5.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                 color = if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(
@@ -2246,7 +2364,7 @@ fun SearchChatsDialog(
                                         )
                                     }
                                     Text(
-                                        text = wsName,
+                                        text = if (wsName == "All") L.drawer.chatHistoryDrawer.all else wsName,
                                         fontSize = 11.5.sp,
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                         color = if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(
@@ -2290,13 +2408,13 @@ fun SearchChatsDialog(
                                 modifier = Modifier.size(40.dp)
                             )
                             Text(
-                                text = "No conversations found",
+                                text = L.drawer.chatHistoryDrawer.noConversationsFound,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = if (query.isNotBlank()) "No chats match \"$query\". Try different keywords or reset filters." else "No chats in this category.",
+                                text = if (query.isNotBlank()) L.drawer.chatHistoryDrawer.noChatsMatchQueryTryDifferent(query) else L.drawer.chatHistoryDrawer.noChatsInThisCategory,
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -2379,7 +2497,7 @@ fun SearchChatsDialog(
                                     ) {
                                         if (conv.workspaceUri.isNotBlank()) {
                                             val clean = conv.workspaceUri.removePrefix("file://").trimEnd('/')
-                                            val name = java.io.File(clean).name.ifBlank { "Workspace" }
+                                            val name = java.io.File(clean).name.ifBlank { L.common.workspace }
                                             Surface(
                                                 shape = RoundedCornerShape(4.dp),
                                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
@@ -2472,12 +2590,12 @@ private fun JarvisNewChatRow(
         com.example.gemini.ui.jarvis.JarvisBotIcon(26.dp, accent, animated = true)
         Spacer(modifier = Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text("New Jarvis chat", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+            Text(L.drawer.chatHistoryDrawer.newJarvisChat, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
             Text(
-                "Any agent and model. Give it a big job: it plans, runs teams of agents and keeps going",
+                L.drawer.chatHistoryDrawer.anyAgentAndModelGiveIt,
                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), maxLines = 2
             )
         }
-        Icon(Icons.Filled.Add, contentDescription = "New Jarvis chat", tint = accent)
+        Icon(Icons.Filled.Add, contentDescription = L.drawer.chatHistoryDrawer.newJarvisChat, tint = accent)
     }
 }
