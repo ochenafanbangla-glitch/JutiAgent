@@ -8,6 +8,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
+import com.example.gemini.i18n.L
 
 /**
  * News for the Jarvis managers: a task finished, failed, got stuck, wants an approval or asks something, or the
@@ -168,7 +169,7 @@ object JarvisEvents {
     /** The whole message for a batch: label for the chat, structured events, the manager's brief, how to handle it. */
     fun format(owner: String, events: List<Event>, guardNote: String?): String {
         val body = buildString {
-            append(OPEN).append("${events.size}\" from=\"AntiGem app (automatic, not typed by the user)\">\n")
+            append(OPEN).append("${events.size}\" from=\"JutiAgent app (automatic, not typed by the user)\">\n")
             events.forEachIndexed { i, e -> append(e.toXml(i + 1)) }
             append("</jarvis_events>\n\n")
             if (!guardNote.isNullOrBlank()) append("<app_note>\n$guardNote\n</app_note>\n\n")
@@ -265,9 +266,9 @@ object JarvisEvents {
             val n = drain(owner).size
             if (!droppedVoiceNotice) {
                 droppedVoiceNotice = true
-                val why = if (chatOnly) "Jarvis is set to chat only (Settings → Jarvis → Floating button & voice)"
-                    else "no voice agent is set (Settings → Jarvis → Voice agent)"
-                JarvisController.showProblem("$n update${if (n == 1) "" else "s"} for the voice Jarvis could not be delivered: $why.")
+                val why = if (chatOnly) L.jarvis.events.jarvisIsSetToChatOnly
+                    else L.jarvis.events.noVoiceAgentIsSetSettings
+                JarvisController.showProblem(L.jarvis.events.countUpdatesForTheVoiceJarvis(n, why))
             }
             return
         }
