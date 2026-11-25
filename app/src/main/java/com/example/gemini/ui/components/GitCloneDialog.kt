@@ -39,6 +39,7 @@ import com.example.gemini.theme.QuotaGreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
+import com.example.gemini.i18n.L
 
 private const val CLONED_PATH_MARKER = "ANTIGEM_CLONED_PATH="
 
@@ -60,15 +61,12 @@ fun GitCloneDialog(
     val scope = rememberCoroutineScope()
     var repoUrl by remember { mutableStateOf(initialUrl) }
     // Signed in to GitHub (Settings → GitHub): private repositories clone too, and can be picked from a list
-    val githubAvailable = LocalEnvironmentManager.isTermuxPackage(context)
     val github by com.example.gemini.data.github.GitHubManager.state.collectAsState()
-    val githubSignedIn = githubAvailable && github.signedIn
+    val githubSignedIn = github.signedIn
     var showRepoPicker by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        if (githubAvailable) {
-            com.example.gemini.data.github.GitHubManager.init(context)
-            com.example.gemini.data.github.GitHubManager.refreshIfStale()
-        }
+        com.example.gemini.data.github.GitHubManager.init(context)
+        com.example.gemini.data.github.GitHubManager.refreshIfStale()
     }
     var projectName by remember { mutableStateOf("") }
     var started by remember { mutableStateOf(false) }
@@ -103,13 +101,14 @@ fun GitCloneDialog(
             isRunning = true
             exitCode = null
             logs.clear()
-            logs.add("⚡ Initializing git clone...")
+            logs.add(L.components.gitClone.initializingGitClone)
             var clonedPath: String? = null
             val args = listOf(trimmedUrl) + listOfNotNull(projectName.trim().takeIf { it.isNotEmpty() })
             val startedAt = System.currentTimeMillis()
             // Remote mode: the repository is cloned by the bridge on the server, not by a script on the phone
             val runClone: suspend ((String) -> Unit) -> Pair<Int, Long> = { sink ->
-                if (com.example.gemini.data.preferences.AuthPreferences.currentRemoteMode) {
+                // the Ubuntu chroot too: its git is inside the chroot, which the bridge runs in
+                if (com.example.gemini.data.preferences.AuthPreferences.currentRemoteMode || com.example.gemini.data.local.chroot.ChrootManager.isActiveNow()) {
                     val code = com.example.gemini.data.remote.AgyBridgeService.instance
                         .cloneRepository(trimmedUrl, projectName.trim(), onLine = sink)
                     code to (System.currentTimeMillis() - startedAt)
@@ -197,18 +196,18 @@ fun GitCloneDialog(
                         }
                         Column {
                             Text(
-                                text = "Clone Git Repository",
+                                text = L.components.gitClone.cloneGitRepository,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 15.sp,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
                                 text = when {
-                                    !started -> if (githubSignedIn) "Public and your GitHub repositories, cloned into your home folder"
-                                        else "Public repositories only, cloned into your home folder"
-                                    isRunning -> "Cloning..."
-                                    exitCode == 0 -> "Cloned in ${(durationMs / 1000.0)}s, opening project..."
-                                    else -> "Clone failed (Exit: $exitCode)"
+                                    !started -> if (githubSignedIn) L.components.gitClone.publicAndYourGithubRepositoriesCloned
+                                        else L.components.gitClone.publicRepositoriesOnlyClonedIntoYour
+                                    isRunning -> L.components.gitClone.cloning
+                                    exitCode == 0 -> L.components.gitClone.clonedInValueSOpeningProject((durationMs / 1000.0))
+                                    else -> L.components.gitClone.cloneFailedExitExitcode(exitCode)
                                 },
                                 fontSize = 11.5.sp,
                                 color = when {
@@ -222,7 +221,7 @@ fun GitCloneDialog(
                     }
                     if (!isRunning) {
                         IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Close, contentDescription = L.common.close, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -233,7 +232,7 @@ fun GitCloneDialog(
                     OutlinedTextField(
                         value = repoUrl,
                         onValueChange = { repoUrl = it },
-                        label = { Text("Repository URL") },
+                        label = { Text(L.components.gitClone.repositoryUrl) },
                         placeholder = { Text("https://github.com/owner/repo") },
                         singleLine = true,
                         isError = trimmedUrl.isNotEmpty() && !urlValid,
@@ -249,7 +248,7 @@ fun GitCloneDialog(
                             showRepoPicker = !showRepoPicker
                             if (showRepoPicker && !github.reposLoaded) com.example.gemini.data.github.GitHubManager.loadRepos()
                         }, contentPadding = PaddingValues(horizontal = 4.dp)) {
-                            Text(if (showRepoPicker) "Hide my GitHub repositories" else "Choose from my GitHub repositories", fontSize = 12.5.sp)
+                            Text(if (showRepoPicker) L.components.gitClone.hideMyGithubRepositories else L.components.gitClone.chooseFromMyGithubRepositories, fontSize = 12.5.sp)
                         }
                         if (showRepoPicker) {
                             GitHubRepoPicker(github) { url ->
@@ -262,13 +261,13 @@ fun GitCloneDialog(
                     OutlinedTextField(
                         value = projectName,
                         onValueChange = { projectName = it },
-                        label = { Text("Project name (optional)") },
-                        placeholder = { Text(repoNameOf(trimmedUrl).ifBlank { "Same as the repository" }) },
+                        label = { Text(L.components.gitClone.projectNameOptional) },
+                        placeholder = { Text(repoNameOf(trimmedUrl).ifBlank { L.components.gitClone.sameAsTheRepository }) },
                         singleLine = true,
                         isError = !nameValid,
                         supportingText = {
                             Text(
-                                if (!nameValid) "Use letters, numbers, '.', '_' or '-'"
+                                if (!nameValid) L.components.gitClone.useLettersNumbersOr
                                 else "~/${projectName.trim().ifBlank { repoNameOf(trimmedUrl).ifBlank { "<repo>" } }}"
                             )
                         },
@@ -288,7 +287,7 @@ fun GitCloneDialog(
                     ) {
                         Icon(Icons.Outlined.CloudDownload, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Clone", fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
+                        Text(L.components.gitClone.clone, fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
                     }
                 } else {
                     // Terminal output container
@@ -338,21 +337,21 @@ fun GitCloneDialog(
                                     executionJob?.cancel()
                                     isRunning = false
                                     exitCode = 130
-                                    logs.add("🛑 Clone cancelled by user.")
+                                    logs.add(L.components.gitClone.cloneCancelledByUser)
                                 },
                                 shape = RoundedCornerShape(8.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = com.example.gemini.theme.AppColors.danger)
                             ) {
                                 Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Stop", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text(L.common.stop, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
                         } else if (exitCode != 0) {
                             OutlinedButton(
                                 onClick = { started = false },
                                 shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("Back", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text(L.common.back, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
                             Spacer(modifier = Modifier.width(8.dp))
                             Button(
@@ -360,7 +359,7 @@ fun GitCloneDialog(
                                 shape = RoundedCornerShape(8.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                             ) {
-                                Text("Close", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text(L.common.close, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
                         }
                     }
@@ -381,18 +380,18 @@ private fun GitHubRepoPicker(github: com.example.gemini.data.github.GitHubManage
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         OutlinedTextField(
             value = query, onValueChange = { query = it }, singleLine = true,
-            placeholder = { Text("Search repositories") },
+            placeholder = { Text(L.components.gitClone.searchRepositories) },
             shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()
         )
         when {
             github.reposLoading && github.repos.isEmpty() -> Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
-                Text("Loading your repositories…", fontSize = 12.sp)
+                Text(L.components.gitClone.loadingYourRepositories, fontSize = 12.sp)
             }
             github.reposError != null && github.repos.isEmpty() ->
                 Text(github.reposError, fontSize = 12.sp, color = com.example.gemini.theme.AppColors.danger)
-            matches.isEmpty() -> Text(if (q.isEmpty()) "No repositories." else "No repository matches \"$q\".", fontSize = 12.sp)
+            matches.isEmpty() -> Text(if (q.isEmpty()) L.components.gitClone.noRepositories else L.components.gitClone.noRepositoryMatchesQ(q), fontSize = 12.sp)
         }
         if (matches.isNotEmpty()) {
             Surface(
@@ -412,7 +411,7 @@ private fun GitHubRepoPicker(github: com.example.gemini.data.github.GitHubManage
                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                                 if (repo.isPrivate) {
                                     Spacer(Modifier.width(6.dp))
-                                    Text("Private", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = com.example.gemini.theme.AppColors.warning)
+                                    Text(L.common.private, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = com.example.gemini.theme.AppColors.warning)
                                 }
                             }
                             repo.description?.let {
