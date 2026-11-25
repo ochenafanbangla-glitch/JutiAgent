@@ -38,9 +38,11 @@ object GlobalContext {
     )
 
     private const val MAX_REMEMBERED_CHATS = 600
+    /** Kept instead of a fingerprint for a chat whose first prompt was undone: its next message is a first message again. */
+    private const val RESTARTED = "restart"
 
     private var sp: SharedPreferences? = null
-    private var filesDir: String = "/data/data/com.termux/files"
+    private var filesDir: String = "/data/data/${BuildConfig.APPLICATION_ID}/files"
 
     private val _builtInEnabled = MutableStateFlow(true)
     val builtInEnabled: StateFlow<Boolean> = _builtInEnabled.asStateFlow()
@@ -108,25 +110,70 @@ object GlobalContext {
 
     // ------------------------------------------------------------------ the built-in text
 
-    /** Termux build with the bridge on this phone: the agent runs in Termux, not on a server. */
-    val runsInTermux: Boolean
-        get() = BuildConfig.FLAVOR.startsWith("termux") && !AuthPreferences.isRemoteEndpoint()
+    /** Where the agents run right now: what the built-in context tells them. */
+    enum class RunPlace { ANTIGEM, CHROOT, SERVER, PC }
+
+    val runPlace: RunPlace
+        get() = when {
+            AuthPreferences.pcOverride != null -> RunPlace.PC
+            AuthPreferences.isRemoteEndpoint() -> RunPlace.SERVER
+            com.example.gemini.data.local.chroot.ChrootManager.isActiveNow() -> RunPlace.CHROOT
+            else -> RunPlace.ANTIGEM
+        }
+
+    /** The bridge runs on this phone: JutiAgent's built-in environment or the Ubuntu chroot. */
+    val runsOnPhone: Boolean
+        get() = runPlace == RunPlace.ANTIGEM || runPlace == RunPlace.CHROOT
+
+    /** The agents can read files in the app's own folder: only in JutiAgent's built-in environment (not the chroot, a server or a PC). */
+    val canReadAppFiles: Boolean
+        get() = runPlace == RunPlace.ANTIGEM
+
+    /** Every place: root only when the user asks. */
+    private const val ROOT_RULE = "- Root: never use `sudo`, `su` or any other root access on your own. Only when the user asks you to; if a task needs it, ask the user first.\n"
 
     /** The built-in context for the current setup (Settings shows exactly this). [h]: the heading level of its sections. */
     fun builtInText(h: String = "##"): String = buildString {
         append("$h The app you run in\n")
         append("- This app is **JutiAgent**. If the user asks what this app is called, say JutiAgent.\n")
         append("- JutiAgent was created by **RANJIT BHAI**. If the user asks who created or made this app, or who created you, say: RANJIT BHAI.\n\n")
-        if (runsInTermux) {
-            append("$h Where you run\n")
-            append("- Android, inside Termux (the JutiAgent app): no root, no sudo; /tmp, /usr, /etc are not usable.\n")
-            append("- Temporary files: use \$TMPDIR ($filesDir/usr/tmp), never /tmp. Install packages with `pkg install <name>`.\n")
-            append("- Home is \$HOME ($filesDir/home); phone storage is /sdcard.\n\n")
+        append("$h Where you run\n")
+        when (runPlace) {
+            RunPlace.ANTIGEM -> {
+                append("- Android, in the JutiAgent app's built-in Linux environment (Termux packages), as the app's own user. There is no sudo; /tmp, /usr and /etc are not usable.\n")
+                append("- Temporary files: use \$TMPDIR ($filesDir/usr/tmp), never /tmp. Install packages with `pkg install <name>`.\n")
+                append("- Home is \$HOME ($filesDir/home); phone storage is /sdcard.\n")
+                append("- Root & phone access: the phone may be rooted (`su -c '…'`), connected to adb (`adb shell …`) or have Shizuku (`rish -c '…'`). Never use any of them on your own; only when the user asks you to.\n\n")
+            }
+            RunPlace.CHROOT -> {
+                val inst = com.example.gemini.data.local.chroot.ChrootManager.activeInstallNow()
+                val user = inst?.user ?: "ubuntu"
+                append("- An Android phone, inside a rooted Ubuntu chroot (${inst?.os?.takeIf { it.isNotBlank() } ?: "Ubuntu"}): a normal glibc Ubuntu where apt, /tmp, /usr and /etc work. It shares Android's kernel and has no systemd (`systemctl` does not work): start services yourself.\n")
+                append("- You run as user `$user` (home /home/$user). `sudo` (often without a password) gives root of the WHOLE PHONE, not only of Ubuntu.\n")
+                append("- Root: never use `sudo`, `su` or root on your own; only when the user asks you to. A task needs a package? Ask the user before running `sudo apt install <name>`.\n")
+                append("- Phone storage is /sdcard and USB drives are under /storage, when the user shared them into the chroot. Folders shared into the chroot are the phone's real folders: what you delete there is deleted on the phone.\n")
+                append("- Android's own tools (`termux-*`, `am`, `pm`) are not available here. The phone may be reachable through adb (`adb shell …`), Shizuku (`rish -c '…'`) or its root (`android-su -c '…'`): use them only when the user asks you to.\n\n")
+            }
+            RunPlace.SERVER -> {
+                append("- On the user's own server (not the phone): the user reads and answers in the JutiAgent app on their phone. Paths are paths on the server.\n")
+                append(ROOT_RULE)
+                append("\n")
+            }
+            RunPlace.PC -> {
+                val pc = AuthPreferences.pcOverride?.pcName?.takeIf { it.isNotBlank() }
+                append("- On the user's computer${pc?.let { " ($it)" } ?: ""}, through JutiAgent for VS Code: right now the user reads and answers on their phone (JutiAgent's Connect to PC). Paths are paths on that computer.\n")
+                append(ROOT_RULE)
+                append("\n")
+            }
         }
         append("$h Showing things in this chat (paths absolute, no spaces, each on its own line)\n")
         append("- Image: `![caption](/abs/path/pic.png)` · Video: `![caption](/abs/path/clip.mp4)` (plays in the chat)\n")
         append("- File: `[name](/abs/path/file.ext)` (the user taps to open)\n")
-        append("Show images, videos and documents you create this way instead of only naming the path.")
+        append("Show images, videos and documents you create this way instead of only naming the path.\n\n")
+        append("$h Asking the user\n")
+        append("Request vague or ambiguous? Don't guess: ask with your question tool (e.g. AskUserQuestion), all at once, with a few options.\n\n")
+        append("$h Node projects\n")
+        append("New projects: use pnpm (faster, less disk) unless the user says otherwise. Existing npm projects (package-lock.json) stay on npm.")
     }.trimEnd()
 
     // ------------------------------------------------------------------ what goes where
@@ -142,7 +189,9 @@ object GlobalContext {
         val parts = mutableListOf<String>()
         if (_builtInEnabled.value) parts += builtInText()
         // Settings → STEM & diagrams: the extra blocks this chat renders (normal chats only, not Jarvis)
-        com.example.gemini.data.render.RenderBundle.promptSection(canReadFiles = runsInTermux)?.let { parts += it }
+        com.example.gemini.data.render.RenderBundle.promptSection(canReadFiles = canReadAppFiles)?.let { parts += it }
+        // Settings → Language → AI replies: sent even with the built-in context off
+        com.example.gemini.i18n.LanguageManager.aiReplyContext()?.let { parts += it }
         val own = active().filter { !it.everyMessage }
         if (own.isNotEmpty()) parts += "## The user's own instructions\n" + entriesBlock(own)
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
@@ -167,14 +216,16 @@ object GlobalContext {
         val first = firstMessageBody()
         val fp = fingerprint()
         val known = chatId?.takeIf { it.isNotBlank() }?.let { id -> synchronized(sent) { sent[id] } }
-        val sendFirst = first != null && (!hasEarlierMessages || known != fp)
+        // a chat whose first prompt was undone starts over, even while its old messages may still be listed
+        val fresh = !hasEarlierMessages || known == RESTARTED
+        val sendFirst = first != null && (fresh || known != fp)
         val every = everyMessageBody()
         if (!sendFirst && every == null) return text to null
         val note = buildString {
             if (sendFirst) {
                 append(
                     when {
-                        !hasEarlierMessages -> "[JutiAgent app context: from the app the user chats through, not written by the user. Follow it for this whole chat; it is not repeated.]"
+                        fresh -> "[JutiAgent app context: from the app the user chats through, not written by the user. Follow it for this whole chat; it is not repeated.]"
                         known != null -> "[JutiAgent app context, updated: it replaces the earlier copy in this chat. Follow it from now on.]"
                         else -> "[JutiAgent app context: from the app the user chats through. Follow it from now on in this chat.]"
                     }
@@ -199,6 +250,12 @@ object GlobalContext {
         persistSent()
     }
 
+    /** The chat's first prompt was undone: it starts over, so its next message carries the context as a first message. */
+    fun restart(chatId: String?) {
+        if (chatId.isNullOrBlank()) return
+        markSent(chatId, RESTARTED)
+    }
+
     /** The chat lost its first-message context (compacted, first message edited): send it again with the next message. */
     fun forget(chatId: String?) {
         if (chatId.isNullOrBlank()) return
@@ -221,6 +278,7 @@ object GlobalContext {
     fun jarvisGuideSection(): String? {
         val parts = mutableListOf<String>()
         if (_builtInEnabled.value) parts += "## JutiAgent app context (for you and every chat you start)\n" + builtInText("###")
+        com.example.gemini.i18n.LanguageManager.aiReplyContext()?.let { parts += it }
         val own = active().filter { it.forJarvis && !it.everyMessage }
         if (own.isNotEmpty()) parts += "## The user's own instructions\n$JARVIS_PRIORITY\n\n" + entriesBlock(own)
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
@@ -242,6 +300,7 @@ object GlobalContext {
     fun taskBody(): String? {
         val parts = mutableListOf<String>()
         if (_builtInEnabled.value) parts += "[JutiAgent app context: from the app, not the user. Follow it for this whole chat.]\n\n" + builtInText()
+        com.example.gemini.i18n.LanguageManager.aiReplyContext()?.let { parts += it }
         val own = active().filter { it.forJarvis }
         if (own.isNotEmpty()) parts += "## The user's own instructions\n" + entriesBlock(own)
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
