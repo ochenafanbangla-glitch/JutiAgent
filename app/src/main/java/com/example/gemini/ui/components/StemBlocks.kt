@@ -36,7 +36,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.gemini.data.render.RenderBundle
@@ -54,6 +53,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import com.example.gemini.i18n.L
 
 /** The STEM blocks a fenced code block can be (by its language), each drawn from the downloaded bundle. */
 enum class StemKind(val component: RenderComponent, val label: String, val lang: String, val interactive: Boolean) {
@@ -103,7 +103,7 @@ fun StemBlockView(kind: StemKind, code: String, modifier: Modifier = Modifier) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText(kind.label, code))
         isCopied = true
-        Toast.makeText(context, "Code copied", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, L.components.stemBlocks.codeCopied, Toast.LENGTH_SHORT).show()
     }
     // TikZ: the compiled SVG once known (fullscreen shows it without compiling again)
     var tikzSvg by remember(code) { mutableStateOf<String?>(null) }
@@ -129,10 +129,10 @@ fun StemBlockView(kind: StemKind, code: String, modifier: Modifier = Modifier) {
                 StemTabs(selectedTab) { selectedTab = it }
                 Spacer(Modifier.width(4.dp))
                 if (kind == StemKind.MATTER && selectedTab == 0) {
-                    StemIconButton(Icons.Outlined.RestartAlt, "Restart") { restartKey++ }
+                    StemIconButton(Icons.Outlined.RestartAlt, L.common.restart) { restartKey++ }
                 }
-                StemIconButton(if (isCopied) Icons.Default.Check else Icons.Outlined.ContentCopy, "Copy", if (isCopied) QuotaGreen else null) { copy() }
-                StemIconButton(Icons.Outlined.OpenInFull, "Expand") { isFullscreen = true }
+                StemIconButton(if (isCopied) Icons.Default.Check else Icons.Outlined.ContentCopy, L.common.copy, if (isCopied) QuotaGreen else null) { copy() }
+                StemIconButton(Icons.Outlined.OpenInFull, L.common.expand) { isFullscreen = true }
             }
             HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
             if (selectedTab == 0) {
@@ -165,7 +165,7 @@ private fun StemTabs(selected: Int, onSelect: (Int) -> Unit) {
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(2.dp)
     ) {
-        listOf("Diagram", "Code").forEachIndexed { i, label ->
+        listOf(L.components.stemBlocks.diagram, L.common.code).forEachIndexed { i, label ->
             Box(
                 Modifier
                     .clip(RoundedCornerShape(14.dp))
@@ -203,9 +203,15 @@ private class StemBridge {
     @JavascriptInterface fun error(log: String) { main.post { onError?.invoke(log) } }
 }
 
+/** A block's web view with its bridge, so a view kept by [ChatWebViewCache] can be bound to the block again. */
+private class StemPageView(context: Context) : WebView(context) {
+    val bridge = StemBridge()
+}
+
 /**
  * A WebView for one block page, loaded on https://appassets.androidplatform.net/render/ so the bundle's files load
- * offline; everything else is blocked. Its height follows the page unless [fill].
+ * offline; everything else is blocked. Its height follows the page unless [fill]. In a chat it is kept alive while
+ * the chat is open ([KeptWebView]) unless [keep] is false (fullscreen pages are never kept).
  */
 @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
 @Composable
@@ -215,17 +221,26 @@ private fun StemWebView(
     reloadKey: Int = 0,
     interactive: Boolean = false,
     fill: Boolean = false,
+    keep: Boolean = true,
     onSvg: ((String) -> Unit)? = null,
     onError: ((String) -> Unit)? = null
 ) {
-    var heightDp by remember { mutableIntStateOf(200) }
-    val bridge = remember { StemBridge() }
-    bridge.onHeight = { px -> heightDp = px.coerceIn(48, 1200) }
-    bridge.onSvg = onSvg
-    bridge.onError = onError
-    AndroidView(
+    val kept = keep && !fill
+    val cache = LocalChatWebViewCache.current
+    val slot = if (kept) keptWebViewSlot("stem") else null
+    // a kept page comes back at its last height instead of 200dp
+    var heightDp by remember(slot) { mutableIntStateOf(slot?.let { cache?.height(it) } ?: 200) }
+    ChatWebViewCache.dlog("StemWebView compose slot=${slot} heightDp=${heightDp} kept=${kept}")
+    val onHeight: (Int) -> Unit = { px ->
+        ChatWebViewCache.dlog("AG.height slot=${slot} px=${px} (was ${heightDp})")
+        heightDp = px.coerceIn(48, 1200)
+        if (slot != null) cache?.setHeight(slot, heightDp)
+    }
+    KeptWebView(
+        part = "stem",
+        keep = kept,
         factory = { ctx ->
-            WebView(ctx).apply {
+            StemPageView(ctx).apply {
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 isVerticalScrollBarEnabled = fill
                 isHorizontalScrollBarEnabled = fill
@@ -239,7 +254,7 @@ private fun StemWebView(
                     settings.displayZoomControls = false
                 }
                 webViewClient = RenderBundle.webViewClient(allowNetwork = false)
-                addJavascriptInterface(bridge, "AG")
+                addJavascriptInterface(this.bridge, "AG")
                 if (interactive && !fill) {
                     // dragging a point / body moves it instead of scrolling the chat
                     setOnTouchListener { v, ev ->
@@ -250,16 +265,20 @@ private fun StemWebView(
             }
         },
         update = { wv ->
+            (wv as? StemPageView)?.bridge?.let {
+                it.onHeight = onHeight
+                it.onSvg = onSvg
+                it.onError = onError
+            }
             val key = "$reloadKey:${html.hashCode()}:${html.length}"
+            ChatWebViewCache.dlog("Stem update slot=${slot} load=${wv.tag != key} ${ChatWebViewCache.wvInfo(wv)}")
             if (wv.tag != key) {
                 wv.tag = key
                 wv.loadDataWithBaseURL(RenderBundle.BASE_URL, html, "text/html", "UTF-8", null)
+            } else {
+                // a kept page handed back: it reports its real height again (the saved one may be stale)
+                wv.evaluateJavascript("try{__h()}catch(e){}", null)
             }
-        },
-        onRelease = { wv ->
-            wv.stopLoading()
-            wv.loadUrl("about:blank")
-            wv.destroy()
         },
         modifier = if (fill) modifier.fillMaxSize() else modifier.fillMaxWidth().height(heightDp.dp)
     )
@@ -317,13 +336,14 @@ private fun TikzBody(code: String, isDark: Boolean, onSvg: (String) -> Unit) {
             val html = remember(prepared, isDark) { StemHtml.tikzCompilePage(prepared, isDark) }
             StemWebView(
                 html = html,
+                keep = false, // the TeX engine is heavy; only the finished picture is kept
                 onSvg = { result.complete(Result.success(it)) },
-                onError = { result.complete(Result.failure(IllegalStateException(it.ifBlank { "TeX failed without a log." }))) }
+                onError = { result.complete(Result.failure(IllegalStateException(it.ifBlank { L.components.stemBlocks.texFailedWithoutALog }))) }
             )
-            StemStatus("Compiling with TeX… (first time takes a few seconds)", Modifier.align(Alignment.BottomCenter))
+            StemStatus(L.components.stemBlocks.compilingWithTexFirstTimeTakes, Modifier.align(Alignment.BottomCenter))
         }
         "error" -> Column(Modifier.fillMaxWidth().padding(10.dp)) {
-            Text("Couldn't compile this TikZ picture", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+            Text(L.components.stemBlocks.couldntCompileThisTikzPicture, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
             Spacer(Modifier.height(6.dp))
             SelectionContainer {
                 Text(
@@ -337,9 +357,9 @@ private fun TikzBody(code: String, isDark: Boolean, onSvg: (String) -> Unit) {
                         .padding(8.dp)
                 )
             }
-            TextButton(onClick = { retry++ }) { Text("Retry") }
+            TextButton(onClick = { retry++ }) { Text(L.common.retry) }
         }
-        "queued" -> StemStatus("Waiting for another TikZ picture to finish…", Modifier.padding(16.dp))
+        "queued" -> StemStatus(L.components.stemBlocks.waitingForAnotherTikzPictureTo, Modifier.padding(16.dp))
         else -> Spacer(Modifier.height(80.dp))
     }
 }
@@ -595,13 +615,13 @@ private fun StemFullscreenDialog(kind: StemKind, code: String, html: String?, on
                     Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) { Icon(Icons.Default.Close, "Close") }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) { Icon(Icons.Default.Close, L.common.close) }
                     Spacer(Modifier.width(6.dp))
                     Text(kind.component.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     StemTabs(selectedTab) { selectedTab = it }
                     Spacer(Modifier.width(4.dp))
-                    if (selectedTab == 0) StemIconButton(Icons.Outlined.RestartAlt, "Reload") { restartKey++ }
-                    StemIconButton(Icons.Outlined.ContentCopy, "Copy") { onCopy() }
+                    if (selectedTab == 0) StemIconButton(Icons.Outlined.RestartAlt, L.common.reload) { restartKey++ }
+                    StemIconButton(Icons.Outlined.ContentCopy, L.common.copy) { onCopy() }
                 }
                 HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                 if (selectedTab == 0) {
@@ -609,7 +629,7 @@ private fun StemFullscreenDialog(kind: StemKind, code: String, html: String?, on
                         StemWebView(html = html, reloadKey = restartKey, interactive = kind.interactive, fill = true)
                     } else {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("The picture is still compiling.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(L.components.stemBlocks.thePictureIsStillCompiling, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 } else {
