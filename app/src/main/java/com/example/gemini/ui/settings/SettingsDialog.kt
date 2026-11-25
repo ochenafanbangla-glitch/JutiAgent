@@ -342,6 +342,8 @@ fun SettingsDialog(
     agyStatus: com.example.gemini.ui.agents.AgentStatusEntry? = null,
     agyAuth: com.example.gemini.data.remote.AgyHubClient.AgyAuthInfo = com.example.gemini.data.remote.AgyHubClient.AgyAuthInfo(),
     onAgySignOut: () -> Unit = {},
+    /** Starts a fresh Antigravity sign-in through the bridge, even while the hub is stuck. */
+    onAgySignIn: () -> Unit = {},
     onAgyCancelSignIn: () -> Unit = {},
     /** Opens on this page (e.g. Jarvis asked to show it); also switches to it while the dialog is open. */
     initialSection: SettingsSection? = null,
@@ -751,7 +753,7 @@ fun SettingsDialog(
                     ) {
                         com.example.gemini.ui.agents.AgyCliCard()
                         com.example.gemini.ui.agents.AgyAccountCard(agyStatus, agyAuth, onAgySignOut, onAgyCancelSignIn)
-                        com.example.gemini.ui.agents.AgyAccountsCard(agyStatus, agyAuth)
+                        com.example.gemini.ui.agents.AgyAccountsCard(agyStatus, agyAuth, onAgySignIn)
                     }
                     SettingsSection.AGY_CLOUD -> Column(
                         Modifier.fillMaxSize().bouncyVerticalScroll(rememberScrollState()).padding(16.dp)
