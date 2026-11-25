@@ -753,7 +753,7 @@ fun SettingsDialog(
                     ) {
                         com.example.gemini.ui.agents.AgyCliCard()
                         com.example.gemini.ui.agents.AgyAccountCard(agyStatus, agyAuth, onAgySignOut, onAgyCancelSignIn)
-                        com.example.gemini.ui.agents.AgyAccountsCard(agyStatus, agyAuth, onAgySignIn)
+                        com.example.gemini.ui.agents.AgyAccountsCard(agyStatus, agyAuth, onRequestSignIn = onAgySignIn)
                     }
                     SettingsSection.AGY_CLOUD -> Column(
                         Modifier.fillMaxSize().bouncyVerticalScroll(rememberScrollState()).padding(16.dp)
