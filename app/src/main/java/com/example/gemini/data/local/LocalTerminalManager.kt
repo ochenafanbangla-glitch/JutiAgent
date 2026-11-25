@@ -5,7 +5,6 @@ import android.system.Os
 import android.util.Log
 import com.example.gemini.data.preferences.AuthPreferences
 import com.jcraft.jsch.ChannelExec
-import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
@@ -17,8 +16,9 @@ import kotlinx.coroutines.flow.firstOrNull
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
-import java.util.Properties
+import com.example.gemini.i18n.L
 
+/** PATH for SSH sessions; also finds the tools of AntiGem or Termux when the host is an Android phone. */
 const val UNIVERSAL_SSH_PATH =
     "export PATH=\"\$HOME/.local/bin:\$HOME/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/data/data/com.termux/files/usr/bin:\$PATH\"; "
 
@@ -29,6 +29,23 @@ data class TmuxWindowInfo(
     val paneId: String? = null,
     val windowId: String? = null
 )
+
+/**
+ * Whether the program in the terminal asked for bracketed paste (DECSET 2004, as bash, zsh and nvim do), so a paste
+ * arrives as one block instead of being typed (and run line by line). The emulator keeps that bit private.
+ */
+private val emulatorDecsetBitMethod: java.lang.reflect.Method by lazy {
+    com.termux.terminal.TerminalEmulator::class.java
+        .getDeclaredMethod("isDecsetInternalBitSet", Int::class.javaPrimitiveType)
+        .apply { isAccessible = true }
+}
+
+private fun com.termux.terminal.TerminalEmulator.isBracketedPasteMode(): Boolean =
+    try {
+        emulatorDecsetBitMethod.invoke(this, 1024) as Boolean // TerminalEmulator.DECSET_BIT_BRACKETED_PASTE_MODE
+    } catch (_: Exception) {
+        false
+    }
 
 fun formatTmuxTitle(winIndex: Int, winName: String): String {
     val displayIndex = winIndex + 1
@@ -68,7 +85,9 @@ class LocalPtySession(
     initialWidthPx: Int = 800,
     initialHeightPx: Int = 480,
     /** False for one-off runs (the Run panel): they show their own status, so no "Press Enter to close tab" line. */
-    val showExitNotice: Boolean = true
+    val showExitNotice: Boolean = true,
+    /** Arguments for /system/bin/sh as they are (the Ubuntu chroot's bridge-log view); null: the normal shell. */
+    val rawShellArgs: Array<String>? = null
 ) : TerminalSessionClient {
     private val TAG = "AntiGemTerminal"
 
@@ -94,6 +113,11 @@ class LocalPtySession(
 
     private val sessionScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    // Keystrokes to the SSH/tmux side, one at a time in the order typed: on the shared IO pool, separate writes could
+    // run out of order (the write lock isn't first-come first-served), scrambling fast typing.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val sshInputDispatcher = Dispatchers.IO.limitedParallelism(1)
+
     private var jschSession: Session? = null
     private var sshChannel: ChannelExec? = null
     private var sshIn: InputStream? = null
@@ -117,6 +141,8 @@ class LocalPtySession(
             TAG,
             "[$id] Initializing session: name=$name, isSsh=$isSsh, winIdx=$tmuxWindowIndex, paneId=$initialPaneId, dir=$workingDirectory"
         )
+        // the local environment's zsh: Bangla/Hindi marks drawn joined, not as <09cd> (both the direct shell and tmux)
+        LocalEnvironmentManager.ensureZshDefaults(context)
         if (isSsh) {
             val safeCwd = context.filesDir.absolutePath
             val dummyBinary = when {
@@ -136,128 +162,45 @@ class LocalPtySession(
             )
 
             hookEmulatorForSsh(terminalSession)
-
-            sessionScope.launch {
-                connectSsh()
-            }
+            // connectSsh() is started by the init block at the end of the class, once every property is set
         } else {
             val safeCols = if (ptyCols > 0) ptyCols else if (LocalTerminalManager.lastKnownCols > 0) LocalTerminalManager.lastKnownCols else 80
             val safeRows = if (ptyRows > 0) ptyRows else if (LocalTerminalManager.lastKnownRows > 0) LocalTerminalManager.lastKnownRows else 24
 
-            if (!LocalEnvironmentManager.isTermuxPackage(context) && LocalEnvironmentManager.isUbuntuInstalled(context)) {
-                val ubuntuDir = LocalEnvironmentManager.getUbuntuRootDir(context)
-                val prootBin = LocalEnvironmentManager.getProotBinaryPath(context)
-                val homeDir = LocalEnvironmentManager.getHomeDir(context)
+            val isChroot = rawShellArgs != null || com.example.gemini.data.local.chroot.ChrootManager.isActive(context)
 
-                val prootTmpDir = File(context.filesDir, "tmp").apply {
-                    mkdirs()
-                    try { Os.chmod(absolutePath, 511) } catch (_: Exception) {}
-                }
-                val shmDir = File(context.filesDir, "shm").apply {
-                    mkdirs()
-                    try { Os.chmod(absolutePath, 511) } catch (_: Exception) {}
-                }
-                val sysdataBindings = LocalEnvironmentManager.setupFakeSysdata(context)
-
-                val prootArgs = mutableListOf(
-                    "proot",
-                    "--kill-on-exit",
-                    "--link2symlink",
-                    "--sysvipc",
-                    "--kernel-release=\\Linux\\localhost\\6.1.0\\2026.08\\aarch64\\localdomain\\-1\\",
-                    "-L",
-                    "--change-id=0:0",
-                    "--rootfs=${ubuntuDir.absolutePath}",
-                    "--cwd=/root",
-                    "--bind=/dev",
-                    "--bind=/proc",
-                    "--bind=/sys",
-                    "--bind=/dev/urandom:/dev/random",
-                    "--bind=${shmDir.absolutePath}:/dev/shm",
-                    "--bind=${prootTmpDir.absolutePath}:/tmp",
-                    "--bind=${LocalEnvironmentManager.getBinDir(context).absolutePath}:/antigem/bin"
+            if (isChroot) {
+                // the Ubuntu chroot: su runs chrootctl, which enters the chroot as its user (see ChrootManager)
+                val shellBinary = "/system/bin/sh"
+                val termuxHome = LocalEnvironmentManager.getHomeDir(context).absolutePath
+                // a folder inside the chroot (from the bridge: /home/<user>/…); the Termux home is the default, not a chroot path
+                val chrootCwd = workingDirectory.takeIf { it.startsWith("/") && !it.startsWith(termuxHome) && !it.startsWith(context.filesDir.absolutePath) }
+                val cwd = context.filesDir.absolutePath
+                val shellArgs = rawShellArgs ?: com.example.gemini.data.local.chroot.ChrootManager.terminalArgs(
+                    context, chrootCwd, initialCommand, execShellAfterCommand
                 )
-                for ((fakeFile, guestPath) in sysdataBindings) {
-                    prootArgs.add("--bind=${fakeFile.absolutePath}:$guestPath")
-                }
-                listOf(
-                    "/apex", "/odm", "/product", "/system", "/system_ext", "/vendor",
-                    "/linkerconfig/ld.config.txt", "/linkerconfig/com.android.art/ld.config.txt",
-                    "/plat_property_contexts", "/property_contexts"
-                ).forEach { hostPath ->
-                    if (File(hostPath).exists()) {
-                        val destInRootfs = File(ubuntuDir, hostPath.removePrefix("/"))
-                        if (File(hostPath).isDirectory) {
-                            destInRootfs.mkdirs()
-                        } else {
-                            destInRootfs.parentFile?.mkdirs()
-                            if (!destInRootfs.exists()) {
-                                try { destInRootfs.createNewFile() } catch (_: Exception) {}
-                            }
-                        }
-                        prootArgs.add("--bind=$hostPath")
-                    }
-                }
-                if (File("/storage").exists() && File("/storage").canRead()) {
-                    prootArgs.add("--bind=/storage")
-                }
-                if (File("/storage/emulated/0").exists()) {
-                    prootArgs.add("--bind=/storage/emulated/0:/sdcard")
-                } else if (File("/sdcard").exists()) {
-                    prootArgs.add("--bind=/sdcard")
-                }
-                LocalEnvironmentManager.setupProotDistroUbuntuFixups(context, ubuntuDir)
-
-                val envWrapper = listOf(
-                    "/usr/bin/env", "-i",
-                    "HOME=/root",
-                    "USER=root",
-                    "LOGNAME=root",
-                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                val envList = arrayOf(
+                    // the app's PATH: where this phone's su is (/system/bin, /system/xbin, the root manager's folder)
+                    "PATH=${System.getenv("PATH") ?: "/system/bin:/system/xbin"}",
+                    "ANDROID_ROOT=/system",
+                    "ANDROID_DATA=/data",
                     "TERM=xterm-256color",
                     "COLORTERM=truecolor",
                     "LANG=C.UTF-8",
-                    "TMPDIR=/tmp"
+                    "COLUMNS=$safeCols",
+                    "LINES=$safeRows"
                 )
-                val interactiveShell = if (File(ubuntuDir, "usr/bin/zsh").exists()) "/usr/bin/zsh" else "/bin/bash"
-                if (!initialCommand.isNullOrBlank()) {
-                    if (execShellAfterCommand) {
-                        prootArgs.addAll(envWrapper + listOf("/bin/bash", "-c", "$initialCommand; exec $interactiveShell"))
-                    } else {
-                        prootArgs.addAll(envWrapper + listOf("/bin/bash", "-c", initialCommand))
-                    }
-                } else {
-                    prootArgs.addAll(envWrapper + listOf(interactiveShell, "--login"))
-                }
-
                 terminalSession = TerminalSession(
-                    prootBin,
-                    context.filesDir.absolutePath,
-                    prootArgs.toTypedArray(),
-                    arrayOf(
-                        "HOME=/root",
-                        "USER=root",
-                        "LOGNAME=root",
-                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                        "TERM=xterm-256color",
-                        "COLORTERM=truecolor",
-                        "LANG=C.UTF-8",
-                        "TMPDIR=/tmp",
-                        "DEBIAN_FRONTEND=noninteractive",
-                        "COLUMNS=$safeCols",
-                        "LINES=$safeRows",
-                        // "PROOT_NO_SECCOMP=1",
-                        "PROOT_LOADER=${LocalEnvironmentManager.getProotLoaderPath(context)}",
-                        "PROOT_TMP_DIR=${prootTmpDir.absolutePath}",
-                        "LD_LIBRARY_PATH=${context.filesDir.absolutePath}/lib:${context.filesDir.absolutePath}/bin"
-                    ),
+                    shellBinary,
+                    cwd,
+                    shellArgs,
+                    envList,
                     LocalTerminalManager.currentBufferSize,
                     this
                 )
                 try {
                     terminalSession.updateSize(safeCols, safeRows)
-                } catch (_: Exception) {
-                }
+                } catch (_: Exception) {}
             } else {
                 val prefix = LocalEnvironmentManager.getPrefixDir(context)
                 val bin = LocalEnvironmentManager.getBinDir(context)
@@ -267,7 +210,9 @@ class LocalPtySession(
 
                 LocalEnvironmentManager.ensureGlibcEnvironment(context)
                 LocalEnvironmentManager.ensureClaudeWrapper(context)
+                com.example.gemini.data.adb.DeviceAccess.ensureTerminalCommands(context)
                 LocalEnvironmentManager.ensureTermuxApiDispatcher(context)
+                TermuxRelocation.ensurePackageHooks(context)
 
                 val loginShellBinaries = arrayOf("login", "bash", "zsh", "fish", "sh")
 
@@ -566,7 +511,7 @@ class LocalPtySession(
             val closedWinId = windowId.trim().substringBefore(" ")
             Log.d(TAG, "[$id] Tmux window closed event: $closedWinId (assignedWin=$assignedWindowId, assignedPane=$assignedPaneId)")
             if (!assignedWindowId.isNullOrBlank() && (closedWinId == assignedWindowId || closedWinId.removePrefix("@") == assignedWindowId?.removePrefix("@"))) {
-                notifySessionClosed("Process exited")
+                notifySessionClosed(L.local.terminalManager.processExited)
             } else {
                 scheduleDebouncedInfoUpdate(50)
             }
@@ -580,14 +525,14 @@ class LocalPtySession(
             val myPane = assignedPaneId?.trim()
             Log.d(TAG, "[$id] Tmux pane exited event: $cleanPane (assigned: $myPane)")
             if (!myPane.isNullOrBlank() && (cleanPane == myPane || cleanPane.removePrefix("%") == myPane.removePrefix("%"))) {
-                notifySessionClosed("Process exited")
+                notifySessionClosed(L.local.terminalManager.processExited)
             } else {
                 scheduleDebouncedInfoUpdate(50)
             }
         },
         onExit = { reason ->
             Log.d(TAG, "[$id] Tmux exited: $reason")
-            notifySessionClosed(reason ?: "Process exited")
+            notifySessionClosed(reason ?: L.local.terminalManager.processExited)
         },
         onCommandResponse = { cmdNum, data, isError ->
             val preview =
@@ -598,7 +543,7 @@ class LocalPtySession(
                 val target = assignedPaneId ?: assignedWindowId
                 if (target != null && (str.contains("can't find") || str.contains("no such")) && str.contains(target)) {
                     Log.d(TAG, "[$id] Target $target no longer exists on remote ($str), notifying session closed")
-                    notifySessionClosed("Process exited")
+                    notifySessionClosed(L.local.terminalManager.processExited)
                 }
             } else if (data.isNotEmpty()) {
                 val str = String(data, Charsets.UTF_8)
@@ -677,7 +622,7 @@ class LocalPtySession(
             assignedPaneId = pId
         } else if (!assignedPaneId.isNullOrBlank() && !pId.isNullOrBlank() && pId != assignedPaneId) {
             Log.d(TAG, "[$id] Current pane $assignedPaneId is dead (fallback to $pId), notifying session closed")
-            notifySessionClosed("Process exited")
+            notifySessionClosed(L.local.terminalManager.processExited)
             return
         }
 
@@ -739,6 +684,33 @@ class LocalPtySession(
         }
     }
 
+    /**
+     * Renames the session (the terminal drawer's long-press). A tmux window is renamed in tmux, so the name survives a
+     * reconnect and tmux stops naming it after the running command; any other session only changes its title here.
+     */
+    fun rename(newName: String) {
+        // ' would end the quoted tmux argument, | splits the ANTIGEM_INFO line the title is read from
+        val clean = newName.replace(Regex("[\\r\\n'|]"), " ").trim()
+        if (clean.isEmpty() || _isExited.value) return
+        if (isSsh && tmuxParser.isControlModeActive) {
+            tmuxWindowIndex?.let { _title.value = formatTmuxTitle(it, clean) }
+            sessionScope.launch(Dispatchers.IO) {
+                synchronized(sshWriteLock) {
+                    try {
+                        val target = assignedPaneId ?: (tmuxWindowIndex?.let { "$tmuxSessionName:$it" } ?: "")
+                        val targetArg = if (target.isNotEmpty()) "-t $target " else ""
+                        sshOut?.write("rename-window $targetArg'$clean'\n".toByteArray(Charsets.UTF_8))
+                        sshOut?.flush()
+                    } catch (_: Exception) {
+                    }
+                }
+                scheduleDebouncedInfoUpdate(150)
+            }
+        } else {
+            _title.value = clean
+        }
+    }
+
     fun requestInfoUpdate() {
         if (!isSsh || !tmuxParser.isControlModeActive || _isExited.value) return
         val now = System.currentTimeMillis()
@@ -775,7 +747,7 @@ class LocalPtySession(
         val repr = String(copy, Charsets.UTF_8).replace("\n", "\\n").replace("\r", "\\r")
         val hex = TmuxControlParser.encodeToHex(copy)
         Log.d(TAG, "[$id] APP -> SSH: \"$repr\" (hex=$hex)")
-        sessionScope.launch(Dispatchers.IO) {
+        sessionScope.launch(sshInputDispatcher) {
             synchronized(sshWriteLock) {
                 try {
                     if (tmuxParser.isControlModeActive) {
@@ -876,8 +848,8 @@ class LocalPtySession(
             Log.d(TAG, "[$id] Starting SSH connection to $sshUser@$sshHost:$sshPort (winIdx=$winIdx)...")
             if (sshHost.isBlank() || sshUser.isBlank()) {
                 notifySessionClosed(
-                    if (AuthPreferences.currentRemoteMode) "SSH is not set up. Open Settings > Servers and enter the SSH host, user and password or key."
-                    else "SSH is not set up. Open Settings > Terminal and enter the SSH host and user."
+                    if (AuthPreferences.currentRemoteMode) L.local.terminalManager.sshIsNotSetUpOpen
+                    else L.local.terminalManager.sshIsNotSetUpOpen2
                 )
                 return@withContext
             }
@@ -955,12 +927,11 @@ class LocalPtySession(
         } catch (e: Exception) {
             Log.e(TAG, "[$id] SSH session error", e)
             notifySessionClosed(
-                "SSH not connected to $sshUser@$sshHost:$sshPort. " +
-                    com.example.gemini.data.remote.RemoteServerManager.friendly(e)
+                L.local.terminalManager.sshNotConnectedToSshuserSshhost(sshUser, sshHost, sshPort, com.example.gemini.data.remote.RemoteServerManager.friendly(e))
             )
         } finally {
             Log.d(TAG, "[$id] SSH loop terminated")
-            notifySessionClosed(if (tmuxParser.isControlModeActive) null else "The SSH connection to $sshHost:$sshPort closed before the terminal started.")
+            notifySessionClosed(if (tmuxParser.isControlModeActive) null else L.local.terminalManager.theSshConnectionToSshhostSshport(sshHost, sshPort))
         }
     }
 
@@ -1029,7 +1000,7 @@ class LocalPtySession(
             val clip = android.content.ClipData.newPlainText("Terminal Text", text)
             clipboard?.setPrimaryClip(clip)
             android.os.Handler(android.os.Looper.getMainLooper()).post {
-                android.widget.Toast.makeText(context, "Copied text", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, L.local.terminalManager.copiedText, android.widget.Toast.LENGTH_SHORT).show()
             }
             Log.d(TAG, "Copied ${text.length} chars to clipboard")
         } catch (e: Exception) {
@@ -1044,9 +1015,9 @@ class LocalPtySession(
             if (clip != null && clip.itemCount > 0) {
                 val text = clip.getItemAt(0).coerceToText(context)?.toString()
                 if (!text.isNullOrEmpty()) {
-                    write(text)
+                    paste(text)
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        android.widget.Toast.makeText(context, "Pasted text", android.widget.Toast.LENGTH_SHORT).show()
+                        android.widget.Toast.makeText(context, L.local.terminalManager.pastedText, android.widget.Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -1096,6 +1067,20 @@ class LocalPtySession(
         } else {
             terminalSession.write(text)
         }
+    }
+
+    /**
+     * Pastes [text] (long-press Paste, or text the keyboard pastes or commits in one go) like Termux's own paste: Esc
+     * and C1 control characters removed, line ends as Enter (\r), wrapped in bracketed-paste markers when the program
+     * asked for them (so bash, zsh, nvim take it as one pasted block and run nothing). Sent as ONE write: typed in
+     * character by character, the shell redraws its line after every character and the app has to draw all of it.
+     */
+    fun paste(text: String) {
+        if (_isExited.value || text.isEmpty()) return
+        val clean = text.replace(Regex("[\\u001B\\u0080-\\u009F]"), "").replace(Regex("\r?\n"), "\r")
+        if (clean.isEmpty()) return
+        val bracketed = terminalSession.emulator?.isBracketedPasteMode() == true
+        write(if (bracketed) "\u001B[200~$clean\u001B[201~" else clean)
     }
 
     fun writeCodePoint(prependEscape: Boolean, codePoint: Int) {
@@ -1179,6 +1164,18 @@ class LocalPtySession(
         } catch (_: Exception) {
         }
     }
+
+    // Kept last: Kotlin runs property initializers and init blocks in file order, and connectSsh() runs on an IO thread
+    // and reads tmuxParser (declared after the first init block). Started from the first init block, a connection that
+    // failed at once (SSH host or user blank, connection refused) reached `finally` before the constructor had set
+    // tmuxParser, and the NullPointerException there crashed the app.
+    init {
+        if (isSsh) {
+            sessionScope.launch {
+                connectSsh()
+            }
+        }
+    }
 }
 
 object LocalTerminalManager {
@@ -1245,10 +1242,6 @@ object LocalTerminalManager {
     }
 
     fun autoLaunchServerIfReady(context: Context) {
-        val pkg = context.packageName
-        val isTermux = pkg == "com.termux" || pkg.contains("termux")
-        if (!isTermux) return
-
         if (!LocalEnvironmentManager.isInstalled(context)) {
             Log.d(TAG, "[AutoLaunch] Bootstrap is not installed yet, skipping auto-launch")
             return
@@ -1459,15 +1452,7 @@ object LocalTerminalManager {
         workingDir: String?
     ): TmuxWindowInfo? = withContext(Dispatchers.IO) {
         try {
-            val jsch = JSch()
-            val session = jsch.getSession(user, host, port)
-            session.setPassword(pass)
-            session.setConfig(Properties().apply {
-                put("StrictHostKeyChecking", "no")
-                put("PreferredAuthentications", "password,keyboard-interactive,publickey")
-                put("ConnectTimeout", "4000")
-            })
-            session.connect(4000)
+            val session = com.example.gemini.data.ssh.SshSessionFactory.open(user = user, host = host, port = port, pass = pass, connectTimeoutMs = 4000)
             try {
                 val dirArg = if (!workingDir.isNullOrBlank()) "-c \"$workingDir\" " else ""
                 val cmd = UNIVERSAL_SSH_PATH +
@@ -1649,6 +1634,10 @@ object LocalTerminalManager {
         selectSession(current[nextIndex].id, context)
     }
 
+    fun renameSession(id: String, newName: String) {
+        _sessions.value.find { it.id == id }?.rename(newName)
+    }
+
     fun closeSession(id: String) {
         Log.d(TAG, "[Manager] closeSession requested for $id")
         val current = _sessions.value
@@ -1681,15 +1670,7 @@ object LocalTerminalManager {
             managerScope.launch(Dispatchers.IO) {
                 try {
                     Log.d(TAG, "[Manager] Connecting SSH to kill remote target (pane=$paneId, winIdx=$winIdx)...")
-                    val jsch = JSch()
-                    val session = jsch.getSession(user, host, port)
-                    session.setPassword(pass)
-                    session.setConfig(Properties().apply {
-                        put("StrictHostKeyChecking", "no")
-                        put("PreferredAuthentications", "password,keyboard-interactive,publickey")
-                        put("ConnectTimeout", "4000")
-                    })
-                    session.connect(4000)
+                    val session = com.example.gemini.data.ssh.SshSessionFactory.open(user = user, host = host, port = port, pass = pass, connectTimeoutMs = 4000)
                     try {
                         val channel = session.openChannel("exec") as ChannelExec
                         val targetCmd = if (!paneId.isNullOrBlank()) "tmux kill-pane -t $paneId 2>/dev/null; " else ""
@@ -1724,15 +1705,7 @@ object LocalTerminalManager {
             val windowIndices = current.mapNotNull { it.tmuxWindowIndex }
             managerScope.launch(Dispatchers.IO) {
                 try {
-                    val jsch = JSch()
-                    val session = jsch.getSession(user, host, port)
-                    session.setPassword(pass)
-                    session.setConfig(Properties().apply {
-                        put("StrictHostKeyChecking", "no")
-                        put("PreferredAuthentications", "password,keyboard-interactive,publickey")
-                        put("ConnectTimeout", "4000")
-                    })
-                    session.connect(4000)
+                    val session = com.example.gemini.data.ssh.SshSessionFactory.open(user = user, host = host, port = port, pass = pass, connectTimeoutMs = 4000)
                     try {
                         val channel = session.openChannel("exec") as ChannelExec
                         val clientKills =
