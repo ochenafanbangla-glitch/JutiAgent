@@ -21,8 +21,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.gemini.data.daemon.DaemonStatus
-import com.example.gemini.data.daemon.TermuxDaemonManager
+import com.example.gemini.data.daemon.IdeDaemonManager
 import kotlinx.coroutines.launch
+import com.example.gemini.i18n.L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,9 +31,9 @@ fun DaemonLogsDialog(
     onDismiss: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
-    val status by TermuxDaemonManager.status.collectAsState()
-    val statusMessage by TermuxDaemonManager.statusMessage.collectAsState()
-    val logs by TermuxDaemonManager.logs.collectAsState()
+    val status by IdeDaemonManager.status.collectAsState()
+    val statusMessage by IdeDaemonManager.statusMessage.collectAsState()
+    val logs by IdeDaemonManager.logs.collectAsState()
     val listState = rememberLazyListState()
 
     // Auto scroll logs to bottom when new logs arrive
@@ -57,11 +58,11 @@ fun DaemonLogsDialog(
                         tint = MaterialTheme.colorScheme.primary
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Go Daemon Status & Logs", style = MaterialTheme.typography.titleMedium)
+                    Text(L.ide.daemonLogs.goDaemonStatusLogs, style = MaterialTheme.typography.titleMedium)
                 }
 
                 IconButton(onClick = onDismiss) {
-                    Icon(imageVector = Icons.Default.Close, contentDescription = "Close")
+                    Icon(imageVector = Icons.Default.Close, contentDescription = L.common.close)
                 }
             }
         },
@@ -113,7 +114,7 @@ fun DaemonLogsDialog(
                         Button(
                             onClick = {
                                 coroutineScope.launch {
-                                    TermuxDaemonManager.ensureDaemonStarted()
+                                    IdeDaemonManager.ensureDaemonStarted()
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(
@@ -125,17 +126,17 @@ fun DaemonLogsDialog(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Refresh,
-                                contentDescription = "Retry",
+                                contentDescription = L.common.retry,
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Retry", fontSize = 12.sp)
+                            Text(L.common.retry, fontSize = 12.sp)
                         }
                     }
                 }
 
                 Text(
-                    text = "Live Log Output:",
+                    text = L.ide.daemonLogs.liveLogOutput,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 4.dp)
@@ -152,7 +153,7 @@ fun DaemonLogsDialog(
                     if (logs.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
-                                "No log entries yet",
+                                L.ide.daemonLogs.noLogEntriesYet,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.Gray
                             )
@@ -187,7 +188,7 @@ fun DaemonLogsDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Close")
+                Text(L.common.close)
             }
         }
     )
