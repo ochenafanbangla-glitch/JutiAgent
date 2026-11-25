@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import com.example.gemini.domain.model.AgentKind
 import com.example.gemini.ui.agents.AgentSheetHeader
 import com.example.gemini.ui.components.ClaudeAccent
+import com.example.gemini.i18n.L
 
 /** Color of a permission mode (chip, picker icon). */
 @Composable
@@ -135,7 +136,7 @@ fun ClaudePermissionModeSheet(
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    ClaudePickerSheet("Permission mode", "how Claude asks before acting", onDismiss) {
+    ClaudePickerSheet(L.claude.modeSheets.permissionMode, L.claude.modeSheets.howClaudeAsksBeforeActing, onDismiss) {
         modes.forEach { (value, label) ->
             PickerOption(
                 title = label,
@@ -160,12 +161,13 @@ fun ClaudePermissionModeSheet(
 }
 
 private fun effortDescription(level: String?): String = when (level) {
-    null -> "The model's own default"
-    "low" -> "Quick answers with light reasoning"
-    "medium" -> "Balanced speed and depth"
-    "high" -> "Thorough work on hard tasks"
-    "xhigh" -> "Extra depth for complex changes"
-    "max" -> "Most thorough; uses plan limits fastest"
+    null -> L.claude.modeSheets.theModelsOwnDefault
+    "minimal" -> L.claude.modeSheets.barelyAnyReasoningFastestReplies
+    "low" -> L.claude.modeSheets.quickAnswersWithLightReasoning
+    "medium" -> L.claude.modeSheets.balancedSpeedAndDepth
+    "high" -> L.claude.modeSheets.thoroughWorkOnHardTasks
+    "xhigh" -> L.claude.modeSheets.extraDepthForComplexChanges
+    "max" -> L.claude.modeSheets.mostThoroughUsesPlanLimitsFastest
     else -> ""
 }
 
@@ -187,17 +189,26 @@ private fun EffortBars(filled: Int, total: Int, color: Color) {
 
 /** How much work Claude puts into each reply. */
 @Composable
-fun ClaudeEffortSheet(levels: List<String>, current: String?, onSelect: (String?) -> Unit, onDismiss: () -> Unit) {
-    ClaudePickerSheet("Effort", "how much work Claude puts into each reply", onDismiss) {
+fun ClaudeEffortSheet(
+    levels: List<String>,
+    current: String?,
+    onSelect: (String?) -> Unit,
+    onDismiss: () -> Unit,
+    // other agents (OpenCode) show the same sheet in their own colour and words
+    agent: AgentKind = AgentKind.CLAUDE,
+    color: Color = ClaudeAccent,
+    detail: String = L.claude.modeSheets.howMuchWorkClaudePutsInto
+) {
+    ClaudePickerSheet(L.claude.modeSheets.effort, detail, onDismiss, agent = agent) {
         (listOf<String?>(null) + levels).forEachIndexed { index, level ->
             PickerOption(
                 title = effortLabel(level),
                 description = effortDescription(level),
-                color = ClaudeAccent,
+                color = color,
                 selected = level == current,
                 leading = {
-                    if (level == null) Icon(Icons.Outlined.AutoMode, null, tint = ClaudeAccent, modifier = Modifier.size(18.dp))
-                    else EffortBars(index, levels.size, ClaudeAccent)
+                    if (level == null) Icon(Icons.Outlined.AutoMode, null, tint = color, modifier = Modifier.size(18.dp))
+                    else EffortBars(index, levels.size, color)
                 },
                 onClick = {
                     onSelect(level)
