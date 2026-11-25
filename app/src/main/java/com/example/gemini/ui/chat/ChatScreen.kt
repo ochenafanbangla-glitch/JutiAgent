@@ -19,6 +19,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -47,6 +49,8 @@ import com.example.gemini.data.preferences.AuthPreferences
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
@@ -71,7 +75,7 @@ import androidx.compose.runtime.collectAsState
 import com.example.gemini.data.daemon.FileNode
 import com.example.gemini.data.daemon.IdeApiClient
 import com.example.gemini.data.daemon.ProjectItem
-import com.example.gemini.data.daemon.TermuxDaemonManager
+import com.example.gemini.data.daemon.IdeDaemonManager
 import com.example.gemini.domain.model.AiModel
 import com.example.gemini.domain.model.ChatMessage
 import com.example.gemini.domain.model.MessageRole
@@ -123,6 +127,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import com.example.gemini.ui.cloud.cloudProjectsSection
+import com.example.gemini.i18n.L
 
 enum class ScrollDirection { UP, DOWN }
 
@@ -140,7 +145,10 @@ fun ChatScreen(
     onNavigateToBrowser: () -> Unit = {},
     // null where that screen doesn't exist (the floating chat window): its header icon is then hidden
     onNavigateToNotes: (() -> Unit)? = null,
-    onNavigateToFiles: (() -> Unit)? = null
+    onNavigateToFiles: (() -> Unit)? = null,
+    // Y (root px) where the bottom input area starts, including the jump-to-top/bottom button that floats just above
+    // it; the floating app switcher keeps above it while the keyboard is open
+    onBottomAreaTopChanged: (Float) -> Unit = {}
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -205,10 +213,8 @@ fun ChatScreen(
     val openCodeState by openCodeBackend.state.collectAsState()
     val openCodeStatus by openCodeBackend.status.collectAsState()
     val openCodeModelsError by openCodeBackend.modelsError.collectAsState()
-    val openCodeConnected by openCodeBackend.connectedProviders.collectAsState()
-    val openCodeModelCount = openCodeBackend.availableModels.collectAsState().value.size
     var openOpenCodeSettings by remember { mutableStateOf(false) }
-    // the OpenCode page Settings opens on (Server & install for the Install button, Providers from the model picker)
+    // the OpenCode page Settings opens on (OpenCode CLI for the Install button, Providers from the model picker)
     var openCodeSettingsPage by remember { mutableStateOf<com.example.gemini.ui.opencode.OpenCodeSettingsPage?>(null) }
     LaunchedEffect(Unit) {
         openCodeBackend.toasts.collect {
@@ -221,9 +227,8 @@ fun ChatScreen(
     val codexStatus by codexBackend.status.collectAsState()
     val codexAccount by codexBackend.account.collectAsState()
     val codexModelsError by codexBackend.modelsError.collectAsState()
-    val codexLimits by codexBackend.rateLimits.collectAsState()
     var openCodexSettings by remember { mutableStateOf(false) }
-    // the Codex page Settings opens on (Server & install for the Install button, Account for Sign in, MCP for /mcp)
+    // the Codex page Settings opens on (Account & CLI for the Install button and Sign in, MCP for /mcp)
     var codexSettingsPage by remember { mutableStateOf<com.example.gemini.ui.codex.CodexSettingsPage?>(null) }
     LaunchedEffect(Unit) {
         codexBackend.toasts.collect {
@@ -318,9 +323,13 @@ fun ChatScreen(
     val projectsList by viewModel.projectsList.collectAsState()
     val isProjectsLoading by viewModel.isProjectsLoading.collectAsState()
     val groupChatsByWorkspace by viewModel.groupChatsByWorkspace.collectAsState()
+    val groupAgentSteps by viewModel.groupAgentSteps.collectAsState()
+    val groupStepsMin by viewModel.groupStepsMin.collectAsState()
+    val showMessageStats by viewModel.showMessageStats.collectAsState()
     val showArchivedChats by viewModel.showArchivedChats.collectAsState()
     val floatingSwitcherOrientation by viewModel.floatingSwitcherOrientation.collectAsState()
     val floatingSwitcherItems by viewModel.floatingSwitcherItems.collectAsState()
+    val floatingSwitcherHandleIcon by viewModel.floatingSwitcherHandleIcon.collectAsState()
     val chatHeaderItems by viewModel.chatHeaderItems.collectAsState()
     val floatingSwitcherAutoCollapseSec by viewModel.floatingSwitcherAutoCollapseSec.collectAsState()
     val isFloatingDiagnosticsEnabled by viewModel.isFloatingDiagnosticsEnabled.collectAsState()
@@ -328,6 +337,7 @@ fun ChatScreen(
     val isFloatingNetworkInspectorEnabled by viewModel.isFloatingNetworkInspectorEnabled.collectAsState()
     var showNetworkInspectorDialog by remember { mutableStateOf(false) }
     val hasSeenTerminalLauncherOnboarding by viewModel.authPreferences.hasSeenTerminalLauncherOnboarding.collectAsState(initial = true)
+    val hasSeenGemmyIntro by viewModel.authPreferences.hasSeenGemmyIntro.collectAsState(initial = true)
     val isTranscribingAudio by viewModel.isTranscribingAudio.collectAsState()
     val pendingLoginUrl by viewModel.pendingLoginUrl.collectAsState()
     val agyLoginIssue by viewModel.agyLoginIssue.collectAsState()
@@ -405,6 +415,14 @@ fun ChatScreen(
         showSettingsDialog = true
         com.example.gemini.data.jarvis.JarvisController.consumeSettingsRequest()
     }
+    // another screen asked to show a settings page (the terminal drawer's gear: Settings → Terminal)
+    val screenSettingsRequest by viewModel.requestedSettingsSection.collectAsState()
+    LaunchedEffect(screenSettingsRequest) {
+        val name = screenSettingsRequest ?: return@LaunchedEffect
+        requestedSettingsSection = runCatching { com.example.gemini.ui.settings.SettingsSection.valueOf(name) }.getOrNull()
+        showSettingsDialog = true
+        viewModel.consumeRequestedSettingsSection()
+    }
 
     // Antigravity cloud agents (Remote Agents): cloud projects, through the hub
     LaunchedEffect(Unit) { com.example.gemini.data.agent.agy.AgyCloud.init(context) }
@@ -425,13 +443,13 @@ fun ChatScreen(
     val voiceCall by com.example.gemini.data.voice.AgyVoiceCall.state.collectAsState()
     val agyPickedModel by viewModel.agyBackend.selectedModelId.collectAsState()
     val beginVoiceCall: () -> Unit = {
-        val title = currentConv?.title?.takeIf { it.isNotBlank() && it != "New Chat" } ?: "Voice chat"
+        val title = currentConv?.title?.takeIf { it.isNotBlank() && it != "New Chat" } ?: L.chat.screen.voiceChat
         com.example.gemini.data.voice.AgyVoiceCall.start(context, title) { viewModel.agyBackend.prepareVoiceCall() }
     }
     val voiceCallPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) beginVoiceCall()
         else com.example.gemini.ui.components.AppToastHelper.showToast(
-            "Voice calls need microphone access.", com.example.gemini.ui.components.ChatToastType.ERROR
+            L.chat.screen.voiceCallsNeedMicrophoneAccess, com.example.gemini.ui.components.ChatToastType.ERROR
         )
     }
     val callWithMicPermission: () -> Unit = {
@@ -447,7 +465,7 @@ fun ChatScreen(
         when {
             voiceCall.active -> com.example.gemini.data.voice.AgyVoiceCall.setMinimized(false)
             !systemConnectionState.canSend -> com.example.gemini.ui.components.AppToastHelper.showToast(
-                "Start the server to call Antigravity.", com.example.gemini.ui.components.ChatToastType.ERROR
+                L.chat.screen.startTheServerToCallAntigravity, com.example.gemini.ui.components.ChatToastType.ERROR
             )
             // agy refuses voice calls for cloud chats (its /voice/ws answers 404 for them)
             currentConv?.cloudProjectId != null -> com.example.gemini.ui.components.AppToastHelper.showToast(
@@ -460,7 +478,7 @@ fun ChatScreen(
     if (showVoicePicker) {
         com.example.gemini.ui.voice.AgyVoicePickerDialog(
             initialVoice = com.example.gemini.data.voice.AgyVoicePreferences.voice.value,
-            actionLabel = { "Call with $it" },
+            actionLabel = { L.chat.screen.callWithValue(it) },
             onChoose = { name ->
                 com.example.gemini.data.voice.AgyVoicePreferences.setVoice(name)
                 com.example.gemini.data.voice.AgyVoicePreferences.setPicked()
@@ -473,6 +491,28 @@ fun ChatScreen(
     // the voice agent moved the call to another chat (it started a new one): show that chat
     LaunchedEffect(Unit) {
         com.example.gemini.data.voice.AgyVoiceCall.conversationMoved.collect { id -> viewModel.selectConversation(id) }
+    }
+    // the Voice call tile or shortcut opened the app (it was not running, or not ready to call out of sight): once the
+    // server is up, open the last chat that had a call and call as the call button does (voice picker, mic permission)
+    val startVoiceCallNow by rememberUpdatedState(onStartVoiceCall)
+    LaunchedEffect(Unit) {
+        com.example.gemini.data.voice.VoiceCallLauncher.pending.collect { at ->
+            if (at == 0L) return@collect
+            val serverUp = kotlinx.coroutines.withTimeoutOrNull(90_000) {
+                viewModel.systemConnectionState.firstOrNull { it.canSend }
+            } != null
+            if (!com.example.gemini.data.voice.VoiceCallLauncher.consumePending()) return@collect
+            when {
+                com.example.gemini.data.voice.AgyVoiceCall.state.value.active -> com.example.gemini.data.voice.AgyVoiceCall.setMinimized(false)
+                !serverUp -> com.example.gemini.ui.components.AppToastHelper.showToast(
+                    L.chat.screen.startTheServerToCallAntigravity, com.example.gemini.ui.components.ChatToastType.ERROR
+                )
+                else -> {
+                    viewModel.openLastCallChat()
+                    startVoiceCallNow()
+                }
+            }
+        }
     }
     // the model picked for the chat changed during the call: the agent plans with it from now on
     LaunchedEffect(agyPickedModel, voiceCall.inCall) {
@@ -530,6 +570,12 @@ fun ChatScreen(
         (claudeState == com.example.gemini.data.agent.claude.ClaudeStatus.SIGNED_OUT || claudeState == com.example.gemini.data.agent.claude.ClaudeStatus.SIGNING_IN)
     ) com.example.gemini.data.agent.claude.ClaudeStatus.READY else claudeState
     val claudeStatusError by viewModel.claudeAccount.statusError.collectAsState()
+    // a reply failed because the Claude sign-in expired while the app stayed open: once the re-check confirms the
+    // sign-out, show the sign-in (as after a fresh start) instead of only the error; custom-provider chats need no login
+    val claudeNeedsLogin by claudeBackend.needsLogin.collectAsState()
+    LaunchedEffect(claudeNeedsLogin, claudeChatState) {
+        if (claudeNeedsLogin && isClaudeChat && claudeChatState == com.example.gemini.data.agent.claude.ClaudeStatus.SIGNED_OUT) showClaudeLogin = true
+    }
     val openClaudeSetup = {
         claudeSettingsPage = com.example.gemini.ui.claude.ClaudeSettingsPage.ACCOUNT
         showSettingsDialog = true
@@ -537,12 +583,21 @@ fun ChatScreen(
     val serverRestarting = serverStatus is com.example.gemini.data.local.LocalServerStatus.Starting ||
         serverStatus is com.example.gemini.data.local.LocalServerStatus.Stopping
     val restartLocalServer = {
-        com.example.gemini.ui.components.AppToastHelper.showToast(if (AuthPreferences.currentRemoteMode) "Restarting the server over SSH…" else "Restarting the local server…", com.example.gemini.ui.components.ChatToastType.INFO)
+        com.example.gemini.ui.components.AppToastHelper.showToast(if (AuthPreferences.currentRemoteMode) L.chat.screen.restartingTheServerOverSsh else L.chat.screen.restartingTheLocalServer, com.example.gemini.ui.components.ChatToastType.INFO)
         com.example.gemini.data.local.LocalServerManager.restartServer(context)
     }
     val recheckClaude = {
-        com.example.gemini.ui.components.AppToastHelper.showToast("Checking Claude Code…", com.example.gemini.ui.components.ChatToastType.INFO)
+        com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.screen.checkingClaudeCode, com.example.gemini.ui.components.ChatToastType.INFO)
         viewModel.claudeAccount.refreshStatus()
+    }
+    val agyCliInfo by com.example.gemini.data.remote.BridgeInfo.agyCli.collectAsState()
+    val agyNotInstalled = com.example.gemini.domain.model.AgentKind.AGY in enabledAgents &&
+        com.example.gemini.ui.agents.agyNotInstalled(systemConnectionState, agyCliInfo)
+    // installs right away; Settings → Antigravity → Account & CLI shows the progress (the hub starts when it is done)
+    val installAgy = {
+        com.example.gemini.data.remote.BridgeInfo.installAgy()
+        requestedSettingsSection = com.example.gemini.ui.settings.SettingsSection.AGY_CLI
+        showSettingsDialog = true
     }
     val agyEntry = if (com.example.gemini.domain.model.AgentKind.AGY in enabledAgents) {
         com.example.gemini.ui.agents.agyStatusEntry(
@@ -554,10 +609,12 @@ fun ChatScreen(
             onSignIn = { viewModel.loginToAgyHub(force = true) },
             onCheckAuth = { viewModel.checkAgyAuthStatus(userInitiated = true) },
             onRetry = {
-                com.example.gemini.ui.components.AppToastHelper.showToast("Reconnecting to Antigravity…", com.example.gemini.ui.components.ChatToastType.INFO)
+                com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.screen.reconnectingToAntigravity, com.example.gemini.ui.components.ChatToastType.INFO)
                 viewModel.retryConnections()
             },
-            onRestartServer = restartLocalServer
+            onRestartServer = restartLocalServer,
+            notInstalled = agyNotInstalled,
+            onInstall = installAgy
         )
     } else null
     val claudeEntry = if (com.example.gemini.domain.model.AgentKind.CLAUDE in enabledAgents) {
@@ -596,7 +653,7 @@ fun ChatScreen(
             // installs right away; Settings → Codex shows the progress
             onSetup = {
                 codexBackend.startCliJob("install")
-                codexSettingsPage = com.example.gemini.ui.codex.CodexSettingsPage.SERVER
+                codexSettingsPage = com.example.gemini.ui.codex.CodexSettingsPage.ACCOUNT
                 showSettingsDialog = true
             },
             // starts the sign-in; Settings → Codex shows the code or the browser link
@@ -899,9 +956,14 @@ fun ChatScreen(
     openVoiceTranscript?.let { rec ->
         com.example.gemini.ui.voice.AgyVoiceTranscriptSheet(rec) { openVoiceTranscript = null }
     }
-    val feedItems = remember(messages, selectedModelId, modelNameOf, voiceCallItems) {
+    // the step pills the user opened (Settings → Appearance → Group Agent Steps): only for this visit of this chat,
+    // so another chat (or coming back) starts with every pill closed
+    val openStepGroups = remember(currentConv?.id) { mutableStateMapOf<String, Boolean>() }
+    val expandedStepGroups = openStepGroups.keys.toSet()
+    val feedItems = remember(messages, selectedModelId, modelNameOf, voiceCallItems, groupAgentSteps, groupStepsMin, expandedStepGroups) {
         // the date and model dividers are always on
-        ChatFeedCache.buildFeedItems(messages, selectedModelId, dividers = true, modelName = modelNameOf, voiceCalls = voiceCallItems)
+        val items = ChatFeedCache.buildFeedItems(messages, selectedModelId, dividers = true, modelName = modelNameOf, voiceCalls = voiceCallItems)
+        StepGroups.apply(items, groupAgentSteps, groupStepsMin, expandedStepGroups, messages)
     }
 
     // Fresh LazyListState per conversation — restores saved position if returning, or initializes directly at bottom
@@ -1139,9 +1201,9 @@ fun ChatScreen(
         claudeModelList.find { it.id == selectedModelId } ?: AiModel(
             id = selectedModelId.ifBlank { "default" },
             displayName = when {
-                claudeModelsRefreshing -> "Loading models…"
-                claudeModelsError != null -> "Models unavailable"
-                else -> "Choose model"
+                claudeModelsRefreshing -> L.chat.screen.loadingModels
+                claudeModelsError != null -> L.chat.screen.modelsUnavailable
+                else -> L.chat.screen.chooseModel
             },
             family = com.example.gemini.domain.model.ModelFamily.CLAUDE
         )
@@ -1149,47 +1211,37 @@ fun ChatScreen(
         enabledModels.find { it.id == selectedModelId } ?: AiModel(
             id = selectedModelId.ifBlank { "default" },
             displayName = when {
-                isRefreshingModels -> "Loading models…"
-                openCodeModelsError != null -> "No models"
+                isRefreshingModels -> L.chat.screen.loadingModels
+                openCodeModelsError != null -> L.chat.screen.noModels
                 selectedModelId.isNotBlank() -> selectedModelId.substringAfter('/')
-                else -> "Choose model"
+                else -> L.chat.screen.chooseModel
             }
         )
     } else if (isCodexChat) {
         enabledModels.find { it.id == selectedModelId } ?: AiModel(
             id = selectedModelId.ifBlank { "default" },
             displayName = when {
-                isRefreshingModels -> "Loading models…"
-                codexModelsError != null -> "No models"
+                isRefreshingModels -> L.chat.screen.loadingModels
+                codexModelsError != null -> L.chat.screen.noModels
                 selectedModelId.isNotBlank() -> selectedModelId
-                else -> "Choose model"
+                else -> L.chat.screen.chooseModel
             },
             family = com.example.gemini.domain.model.ModelFamily.OTHER
         )
     } else AiModel.findInList(enabledModels, selectedModelId, preferredModelName)
     val currentQuota = quotas.find { it.modelId == selectedModelId }
 
-    val activeChatProject by TermuxDaemonManager.activeProject.collectAsState()
-    val usedProjects by TermuxDaemonManager.projects.collectAsState()
+    val activeChatProject by IdeDaemonManager.activeProject.collectAsState()
+    val usedProjects by IdeDaemonManager.projects.collectAsState()
     var showProjectDropdown by remember { mutableStateOf(false) }
-    var chatProjectFiles by remember { mutableStateOf<List<com.example.gemini.data.daemon.FileNode>>(emptyList()) }
 
     LaunchedEffect(Unit) {
-        TermuxDaemonManager.loadProjects(conversations)
+        IdeDaemonManager.loadProjects(conversations)
     }
 
     LaunchedEffect(Unit) {
-        TermuxDaemonManager.serverReconnectedEvent.collect {
-            TermuxDaemonManager.loadProjects(conversations)
-        }
-    }
-
-    LaunchedEffect(activeChatProject) {
-        if (activeChatProject != null) {
-            scope.launch {
-                val tree = IdeApiClient.getFileTree(activeChatProject?.path)
-                chatProjectFiles = flattenFileNodes(tree)
-            }
+        IdeDaemonManager.serverReconnectedEvent.collect {
+            IdeDaemonManager.loadProjects(conversations)
         }
     }
 
@@ -1309,7 +1361,7 @@ fun ChatScreen(
                         scope.launch { drawerState.close() }
                     }
                 } else {
-                    android.widget.Toast.makeText(context, "This conversation doesn't exist", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(context, L.chat.screen.thisConversationDoesntExist, android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
         )
@@ -1472,7 +1524,7 @@ fun ChatScreen(
                 onDismissRequest = { viewModel.clearPendingLoginUrl() },
                 title = {
                     Text(
-                        text = "Sign In with Browser",
+                        text = L.chat.screen.signInWithBrowser,
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.sp
                     )
@@ -1480,24 +1532,21 @@ fun ChatScreen(
                 text = {
                     Column {
                         Text(
-                            text = "Antigravity requires Google authentication to access Gemini models.",
+                            text = L.chat.screen.antigravityRequiresGoogleAuthentication,
                             fontSize = 13.5.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         if (!remoteSignIn) {
                             Text(
-                                text = "Do you want to open your browser to log in now?",
+                                text = L.chat.screen.doYouWantToOpenYour,
                                 fontSize = 13.5.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                         } else {
                             Text(
-                                text = "1. Open the browser and sign in.\n" +
-                                    "2. Your browser then shows an error page for localhost. That is expected: the sign-in " +
-                                    "finishes on the server, not on this phone.\n" +
-                                    "3. Copy that page's address from the address bar and paste it below.",
+                                text = L.chat.screen.n1OpenTheBrowserAndSign,
                                 fontSize = 13.sp,
                                 lineHeight = 18.sp,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -1527,12 +1576,12 @@ fun ChatScreen(
                             Button(
                                 onClick = {
                                     callbackBusy = true
-                                    callbackStatus = "Sending to the server…"
+                                    callbackStatus = L.chat.screen.sendingToTheServer
                                     viewModel.forwardLoginCallback(pastedCallback) { result ->
                                         callbackBusy = false
                                         result.fold(
                                             {
-                                                callbackStatus = "✓ Sent. Finishing sign-in…"
+                                                callbackStatus = L.chat.screen.sentFinishingSignIn
                                                 viewModel.clearPendingLoginUrl()
                                             },
                                             { callbackStatus = "✗ ${it.message}" }
@@ -1542,7 +1591,7 @@ fun ChatScreen(
                                 enabled = pastedCallback.isNotBlank() && !callbackBusy,
                                 colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
                             ) {
-                                Text("Finish", fontWeight = FontWeight.SemiBold)
+                                Text(L.chat.screen.finish, fontWeight = FontWeight.SemiBold)
                             }
                         }
                         Button(
@@ -1560,23 +1609,24 @@ fun ChatScreen(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
                         ) {
-                            Text("Open Browser", fontWeight = FontWeight.SemiBold)
+                            Text(L.chat.screen.openBrowser, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { viewModel.clearPendingLoginUrl() }) {
-                        Text("Cancel")
+                        Text(L.common.cancel)
                     }
                 }
             )
         }
         agyLoginIssue?.let { issue ->
+            val verifyUrl = issue.verificationUrl
             AlertDialog(
                 onDismissRequest = { viewModel.clearAgyLoginIssue() },
                 title = {
                     Text(
-                        text = "Account Verification Required",
+                        text = if (verifyUrl != null) L.chat.screen.accountVerificationRequired else L.chat.screen.cantSignInToAntigravity,
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.sp
                     )
@@ -1589,28 +1639,39 @@ fun ChatScreen(
                     )
                 },
                 confirmButton = {
-                    Button(
-                        onClick = {
-                            try {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(issue.verificationUrl)).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (verifyUrl != null) {
+                        Button(
+                            onClick = {
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(verifyUrl)).apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    android.util.Log.e("ChatScreen", "Failed to open browser: ${e.message}")
                                 }
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                android.util.Log.e("ChatScreen", "Failed to open browser: ${e.message}")
-                            }
-                            viewModel.clearAgyLoginIssue()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
-                    ) {
-                        Text("Verify Account", fontWeight = FontWeight.SemiBold)
+                                viewModel.clearAgyLoginIssue()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
+                        ) {
+                            Text(L.chat.screen.verifyAccount, fontWeight = FontWeight.SemiBold)
+                        }
+                    } else {
+                        Button(
+                            onClick = { viewModel.clearAgyLoginIssue() },
+                            colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
+                        ) {
+                            Text(L.common.ok, fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 },
-                dismissButton = {
-                    TextButton(onClick = { viewModel.clearAgyLoginIssue() }) {
-                        Text("Cancel")
+                dismissButton = if (verifyUrl != null) {
+                    {
+                        TextButton(onClick = { viewModel.clearAgyLoginIssue() }) {
+                            Text(L.common.cancel)
+                        }
                     }
-                }
+                } else null
             )
         }
         Scaffold(
@@ -1648,7 +1709,7 @@ fun ChatScreen(
                             val activeTitle = currentConv?.title?.takeIf {
                                 it.isNotBlank() && it != "New Chat" && it != "Conversation"
                             }
-                            listTitle ?: activeTitle ?: currentConv?.title?.takeIf { it.isNotBlank() } ?: "Antigravity Chat"
+                            listTitle ?: activeTitle ?: currentConv?.title?.takeIf { it.isNotBlank() } ?: L.chat.screen.antigravityChat
                         }
 
                         val isChatStarted = messages.isNotEmpty()
@@ -1656,12 +1717,12 @@ fun ChatScreen(
                             val convUri = currentConv?.workspaceUri
                             if (currentConv?.isCloud == true) {
                                 // an Antigravity cloud chat: its cloud project
-                                "☁ " + (com.example.gemini.data.agent.agy.AgyCloud.projectName(currentConv?.cloudProjectId) ?: "Cloud")
+                                "☁ " + (com.example.gemini.data.agent.agy.AgyCloud.projectName(currentConv?.cloudProjectId) ?: L.chat.screen.cloud)
                             } else if (!convUri.isNullOrBlank()) {
                                 val clean = convUri.removePrefix("file://").trimEnd('/')
-                                File(clean).name.ifBlank { "Workspace" }
+                                File(clean).name.ifBlank { L.common.workspace }
                             } else {
-                                if (isChatStarted) "Outside" else "Select Project"
+                                if (isChatStarted) L.chat.screen.outside else L.chat.screen.selectProject
                             }
                         }
                         val showStatusDot = isLocalToolsInstalled || AuthPreferences.currentRemoteMode ||
@@ -1675,12 +1736,20 @@ fun ChatScreen(
                             modifier = Modifier.fillMaxWidth().padding(end = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // long-press the title: this chat on the home screen (an icon, or a widget)
+                            var titleMenuOpen by remember { mutableStateOf(false) }
+                            Box(Modifier.weight(1f)) {
                             // the real title fades in when the chat gets one (instead of jumping from "New Chat")
                             Crossfade(
                                 targetState = displayedChatTitle,
                                 animationSpec = tween(250),
                                 label = "chat_title",
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.pointerInput(currentConv?.id, isChatStarted) {
+                                    detectTapGestures(onLongPress = {
+                                        val conv = currentConv
+                                        if (conv != null && isChatStarted && !conv.readOnly && !isInFloatingWindow) titleMenuOpen = true
+                                    })
+                                }
                             ) { chatTitle ->
                                 Text(
                                     text = chatTitle,
@@ -1690,6 +1759,37 @@ fun ChatScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                            }
+                            DropdownMenu(expanded = titleMenuOpen, onDismissRequest = { titleMenuOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text(L.common.addToHomeScreen) },
+                                    leadingIcon = { Icon(Icons.Outlined.AppShortcut, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        titleMenuOpen = false
+                                        currentConv?.let { com.example.gemini.data.homescreen.HomeShortcuts.pinChat(context, it.id, it.agent, displayedChatTitle) }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(L.chat.screen.addAsAWidget) },
+                                    leadingIcon = { Icon(Icons.Outlined.Widgets, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        titleMenuOpen = false
+                                        val conv = currentConv
+                                        if (conv != null) {
+                                            if (com.example.gemini.ui.homescreen.HomeWidgets.canPin(context)) {
+                                                com.example.gemini.ui.homescreen.HomeWidgets.pin(
+                                                    context, com.example.gemini.ui.homescreen.WidgetKind.CHAT, Triple(conv.id, conv.agent, displayedChatTitle)
+                                                )
+                                            } else {
+                                                com.example.gemini.ui.components.AppToastHelper.showToast(
+                                                    L.chat.screen.longPressYourHomeScreenWidgets,
+                                                    com.example.gemini.ui.components.ChatToastType.INFO
+                                                )
+                                            }
+                                        }
+                                    }
+                                )
+                            }
                             }
                             Spacer(modifier = Modifier.width(10.dp))
                             Box {
@@ -1736,7 +1836,7 @@ fun ChatScreen(
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Rounded.LightMode,
-                                                contentDescription = "Screen stays on",
+                                                contentDescription = L.chat.screen.screenStaysOn,
                                                 tint = com.example.gemini.theme.AppColors.warning,
                                                 modifier = Modifier.size(13.dp)
                                             )
@@ -1758,7 +1858,7 @@ fun ChatScreen(
                                                         )
                                                         Spacer(modifier = Modifier.width(6.dp))
                                                         Text(
-                                                            text = "Screen stays on",
+                                                            text = L.chat.screen.screenStaysOn,
                                                             fontSize = 14.sp,
                                                             fontWeight = FontWeight.SemiBold,
                                                             color = MaterialTheme.colorScheme.onSurface
@@ -1766,7 +1866,7 @@ fun ChatScreen(
                                                     }
                                                     Spacer(modifier = Modifier.height(6.dp))
                                                     Text(
-                                                        text = "The screen won't turn off by itself while:",
+                                                        text = L.chat.screen.theScreenWontTurnOffBy,
                                                         fontSize = 12.5.sp,
                                                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                                                     )
@@ -1780,7 +1880,7 @@ fun ChatScreen(
                                                     }
                                                     Spacer(modifier = Modifier.height(6.dp))
                                                     Text(
-                                                        text = "It turns off normally again once this is done.",
+                                                        text = L.chat.screen.itTurnsOffNormallyAgainOnce,
                                                         fontSize = 12.sp,
                                                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                                                     )
@@ -1801,7 +1901,7 @@ fun ChatScreen(
                                     if (!isChatStarted) {
                                         Icon(
                                             imageVector = Icons.Default.ArrowDropDown,
-                                            contentDescription = "Choose project",
+                                            contentDescription = L.chat.screen.chooseProject,
                                             modifier = Modifier.size(16.dp),
                                             tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                                         )
@@ -1886,13 +1986,13 @@ fun ChatScreen(
                                             else -> Icons.Outlined.AddComment
                                         },
                                         contentDescription = when (id) {
-                                            "ide" -> "Open IDE"
-                                            "terminal" -> "Open Terminal"
-                                            "browser" -> "Open Browser"
-                                            "notes" -> "Open Notes"
-                                            "files" -> "Open Files"
-                                            "run" -> if (anyRunGoing) "Run (a command is running)" else "Open Run panel"
-                                            else -> "New chat"
+                                            "ide" -> L.chat.screen.openIde
+                                            "terminal" -> L.chat.screen.openTerminal
+                                            "browser" -> L.chat.screen.openBrowser
+                                            "notes" -> L.chat.screen.openNotes
+                                            "files" -> L.chat.screen.openFiles
+                                            "run" -> if (anyRunGoing) L.chat.screen.runACommandIsRunning else L.chat.screen.openRunPanel
+                                            else -> L.chat.screen.newChat
                                         },
                                         tint = if (id == "run" && anyRunGoing) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
                                         modifier = Modifier.size(19.dp)
@@ -1906,7 +2006,7 @@ fun ChatScreen(
                             IconButton(onClick = navigateBackConversation) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back",
+                                    contentDescription = L.common.back,
                                     tint = MaterialTheme.colorScheme.onSurface
                                 )
                             }
@@ -1914,7 +2014,7 @@ fun ChatScreen(
                             IconButton(onClick = { scope.launch { drawerState.open() } }) {
                                 Icon(
                                     imageVector = Icons.Default.Menu,
-                                    contentDescription = "Open Drawer",
+                                    contentDescription = L.chat.screen.openDrawer,
                                     tint = MaterialTheme.colorScheme.onSurface
                                 )
                             }
@@ -1926,14 +2026,14 @@ fun ChatScreen(
                             IconButton(onClick = onMinimizeWindow) {
                                 Icon(
                                     imageVector = Icons.Default.Remove,
-                                    contentDescription = "Minimize to Bubble",
+                                    contentDescription = L.chat.screen.minimizeToBubble,
                                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
                                 )
                             }
                             IconButton(onClick = onOpenFullScreen) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Outlined.OpenInNew,
-                                    contentDescription = "Open Full Screen",
+                                    contentDescription = L.chat.screen.openFullScreen,
                                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
                                 )
                             }
@@ -1942,7 +2042,7 @@ fun ChatScreen(
                             IconButton(onClick = { showChatTelemetryDialog = true }) {
                                 Icon(
                                     imageVector = Icons.Outlined.Analytics,
-                                    contentDescription = "Chat Telemetry & Tokens",
+                                    contentDescription = L.chat.screen.chatTelemetryTokens,
                                     tint = ClaudeTerracotta
                                 )
                             }
@@ -1968,6 +2068,12 @@ fun ChatScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
+                        .onGloballyPositioned { coords ->
+                            // This box ends where the input area starts; the jump button sits 12dp + 38dp above that.
+                            // Y only: the chat is hidden by moving it sideways, which doesn't change it.
+                            val bottomY = coords.localToRoot(Offset(0f, coords.size.height.toFloat())).y
+                            onBottomAreaTopChanged(bottomY - with(density) { (12 + 38).dp.toPx() })
+                        }
                 ) {
                     val sysStatus = systemConnectionState.status
                     val isServerInitializing = sysStatus == com.example.gemini.data.remote.SystemStatus.STARTING || sysStatus == com.example.gemini.data.remote.SystemStatus.ACQUIRING_CSRF || (sysStatus == com.example.gemini.data.remote.SystemStatus.OFFLINE && isInitialGracePeriod)
@@ -1976,7 +2082,10 @@ fun ChatScreen(
                     // existing chats too: while one loads, show the loading skeleton like for any other chat
                     val isExistingConversation = currentConv != null && currentConv?.title != "New Chat" &&
                         (conversations.any { it.id == currentConv?.id } || jarvisConversations.any { it.id == currentConv?.id })
-                    val isExistingChat = messages.isEmpty() && isExistingConversation && isLoadingConversation
+                    // agy missing: the hub's "agy is not installed" error is also this chat's error, and an existing chat
+                    // never finishes loading. Both step aside for the empty view's "not installed" card with Install.
+                    val agyMissingHere = isAgyChat && agyNotInstalled
+                    val isExistingChat = messages.isEmpty() && isExistingConversation && isLoadingConversation && !agyMissingHere
                     Log.d("CHAT_OPEN_DEBUG", "🖥️ [ChatScreen Render] convId=${currentConv?.id}, title='${currentConv?.title}', isLoading=$isLoadingConversation, isExisting=$isExistingChat, msgCount=${messages.size}, error=$conversationError, isServerStopped=$isServerStopped")
 
                     if (isAgyChat && isServerStopped && messages.isEmpty()) {
@@ -2035,7 +2144,7 @@ fun ChatScreen(
                         } else {
                             com.example.gemini.ui.components.EngineWarmingUpView()
                         }
-                    } else if (!conversationError.isNullOrBlank() && messages.isEmpty() && (isExistingConversation || currentConv != null)) {
+                    } else if (!conversationError.isNullOrBlank() && messages.isEmpty() && (isExistingConversation || currentConv != null) && !agyMissingHere) {
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -2051,7 +2160,7 @@ fun ChatScreen(
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = "Unable to Load Chat",
+                                text = L.chat.screen.unableToLoadChat,
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -2059,7 +2168,7 @@ fun ChatScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             SelectionContainer {
                                 Text(
-                                    text = conversationError ?: "Failed to load conversation messages.",
+                                    text = conversationError ?: L.chat.screen.failedToLoadConversationMessages,
                                     fontSize = 13.sp,
                                     color = MaterialTheme.colorScheme.error.copy(alpha = 0.9f),
                                     textAlign = TextAlign.Center,
@@ -2084,12 +2193,12 @@ fun ChatScreen(
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Retry", fontSize = 13.5.sp)
+                                Text(L.common.retry, fontSize = 13.5.sp)
                             }
                         }
                     } else if (isExistingChat) {
                         com.example.gemini.ui.components.ConversationLoadingSkeleton()
-                    } else if (messages.isEmpty()) {
+                    } else if (messages.isEmpty() && voiceCallItems.isEmpty()) {
                         BoxWithConstraints(
                             modifier = Modifier.fillMaxSize()
                         ) {
@@ -2134,35 +2243,46 @@ fun ChatScreen(
                                     com.example.gemini.ui.agents.AgentSetupPrompt(
                                         agent = com.example.gemini.domain.model.AgentKind.OPENCODE,
                                         title = when (openCodeState) {
-                                            com.example.gemini.data.agent.opencode.OpenCodeState.CHECKING -> "Starting OpenCode…"
-                                            com.example.gemini.data.agent.opencode.OpenCodeState.NOT_INSTALLED -> "OpenCode is not installed"
-                                            else -> "OpenCode is unavailable"
+                                            com.example.gemini.data.agent.opencode.OpenCodeState.CHECKING -> L.chat.screen.startingOpencode
+                                            com.example.gemini.data.agent.opencode.OpenCodeState.NOT_INSTALLED -> L.chat.screen.opencodeIsNotInstalled
+                                            else -> L.chat.screen.opencodeIsUnavailable
                                         },
                                         message = if (openCodeState == com.example.gemini.data.agent.opencode.OpenCodeState.CHECKING)
-                                            "Waiting for the server to come up. This takes a few seconds after the app opens."
+                                            L.chat.screen.waitingForTheServerToCome
                                         else openCodeEntry?.detail ?: openCodeState.label,
                                         statusColor = openCodeEntry?.color,
                                         actionLabel = openCodeEntry?.action?.label,
                                         onAction = { openCodeEntry?.action?.onClick?.invoke() },
-                                        secondaryLabel = if (openCodeState == com.example.gemini.data.agent.opencode.OpenCodeState.CHECKING) null else "Server logs",
+                                        secondaryLabel = if (openCodeState == com.example.gemini.data.agent.opencode.OpenCodeState.CHECKING) null else L.common.serverLogs,
                                         onSecondary = { showLocalServerOutputDialog = true }
                                     )
                                 } else if (isCodexChat && codexState != com.example.gemini.data.agent.codex.CodexState.READY) {
                                     com.example.gemini.ui.agents.AgentSetupPrompt(
                                         agent = com.example.gemini.domain.model.AgentKind.CODEX,
                                         title = when (codexState) {
-                                            com.example.gemini.data.agent.codex.CodexState.CHECKING -> "Starting Codex…"
-                                            com.example.gemini.data.agent.codex.CodexState.NOT_INSTALLED -> "Codex is not installed"
-                                            com.example.gemini.data.agent.codex.CodexState.SIGNED_OUT -> "Sign in to Codex"
-                                            else -> "Codex is unavailable"
+                                            com.example.gemini.data.agent.codex.CodexState.CHECKING -> L.chat.screen.startingCodex
+                                            com.example.gemini.data.agent.codex.CodexState.NOT_INSTALLED -> L.chat.screen.codexIsNotInstalled
+                                            com.example.gemini.data.agent.codex.CodexState.SIGNED_OUT -> L.chat.screen.signInToCodex
+                                            else -> L.chat.screen.codexIsUnavailable
                                         },
                                         message = if (codexState == com.example.gemini.data.agent.codex.CodexState.CHECKING)
-                                            "Waiting for the server to come up. This takes a few seconds after the app opens."
+                                            L.chat.screen.waitingForTheServerToCome
                                         else codexEntry?.detail ?: codexState.label,
                                         statusColor = codexEntry?.color,
                                         actionLabel = codexEntry?.action?.label,
                                         onAction = { codexEntry?.action?.onClick?.invoke() },
-                                        secondaryLabel = if (codexState == com.example.gemini.data.agent.codex.CodexState.CHECKING) null else "Server logs",
+                                        secondaryLabel = if (codexState == com.example.gemini.data.agent.codex.CodexState.CHECKING) null else L.common.serverLogs,
+                                        onSecondary = { showLocalServerOutputDialog = true }
+                                    )
+                                } else if (isAgyChat && agyNotInstalled) {
+                                    com.example.gemini.ui.agents.AgentSetupPrompt(
+                                        agent = com.example.gemini.domain.model.AgentKind.AGY,
+                                        title = L.chat.screen.antigravityIsNotInstalled,
+                                        message = agyEntry?.detail ?: L.chat.screen.antigravityAgyIsNotInstalledYet,
+                                        statusColor = agyEntry?.color,
+                                        actionLabel = agyEntry?.action?.label,
+                                        onAction = { agyEntry?.action?.onClick?.invoke() },
+                                        secondaryLabel = L.common.serverLogs,
                                         onSecondary = { showLocalServerOutputDialog = true }
                                     )
                                 } else when (if (isClaudeChat || isOpenCodeChat || isCodexChat) null else systemConnectionState.status) {
@@ -2182,7 +2302,7 @@ fun ChatScreen(
                                         }
                                     } else {
                                         Text(
-                                            text = "How can I help you today?",
+                                            text = L.chat.screen.howCanIHelpYouToday,
                                             fontSize = 22.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = MaterialTheme.colorScheme.onSurface,
@@ -2190,7 +2310,7 @@ fun ChatScreen(
                                         )
                                         Spacer(modifier = Modifier.height(8.dp))
                                         Text(
-                                            text = "Ask a question, brainstorm ideas, or start coding",
+                                            text = L.chat.screen.askAQuestionBrainstormIdeasOr,
                                             fontSize = 14.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
                                             textAlign = TextAlign.Center
@@ -2208,9 +2328,14 @@ fun ChatScreen(
                             )
                         }
 
+                        // web views of this chat's blocks stay alive while the chat is open; all destroyed when it is left
+                        val chatWebViewCache = remember(currentConv?.id) { com.example.gemini.ui.components.ChatWebViewCache(context) }
+                        DisposableEffect(chatWebViewCache) { onDispose { chatWebViewCache.close() } }
+
                         CompositionLocalProvider(
                             androidx.compose.ui.platform.LocalDensity provides customDensity,
-                            com.example.gemini.ui.components.LocalQuestionPanelActive provides true
+                            com.example.gemini.ui.components.LocalQuestionPanelActive provides true,
+                            com.example.gemini.ui.components.LocalChatWebViewCache provides chatWebViewCache
                         ) {
                                 // iOS-style vertical bounce at the top and bottom (also for a short chat that cannot scroll);
                                 // only this list: code blocks and other sideways scrollers keep Android's own edge effect
@@ -2322,15 +2447,23 @@ fun ChatScreen(
                                                     is MarkdownBlock.Alert, is MarkdownBlock.Table -> true
                                                     else -> false
                                                 }
-                                                if (selectable) SelectionContainer { blockView() } else blockView()
+                                                CompositionLocalProvider(com.example.gemini.ui.components.LocalWebViewSlot provides feedItem.key) {
+                                                    if (selectable) SelectionContainer { blockView() } else blockView()
+                                                }
                                             }
                                         }
                                         // with the working animation on, the working row below replaces these dots
                                         // progress shows in the working row under the reply (the working animation is always on)
                                         is ChatFeedItem.AssistantTyping -> Unit
+                                        is ChatFeedItem.StepGroup -> StepGroupPill(
+                                            group = feedItem,
+                                            onToggle = { if (openStepGroups.remove(feedItem.key) == null) openStepGroups[feedItem.key] = true },
+                                            modifier = Modifier.padding(horizontal = 16.dp)
+                                        )
                                         is ChatFeedItem.AssistantFooter -> {
                                             AssistantMessageFooter(
                                                 message = feedItem.message,
+                                                showStats = showMessageStats,
                                                 // fades in where the working row fades out (no pop-in at the end of a turn)
                                                 modifier = Modifier.animateItem(fadeInSpec = tween(220), placementSpec = null, fadeOutSpec = null),
                                                 isDevModeEnabled = isDevModeEnabled,
@@ -2350,6 +2483,7 @@ fun ChatScreen(
                                             MessageBubble(
                                                 message = feedItem.message,
                                                 modelId = selectedModelId,
+                                                showStats = showMessageStats,
                                                 isDevModeEnabled = isDevModeEnabled,
                                                 onApproveTool = { toolCall, msgId ->
                                                     viewModel.approveAndExecuteTerminalTool(toolCall, msgId)
@@ -2437,7 +2571,7 @@ fun ChatScreen(
                             ) {
                                 Icon(
                                     imageVector = if (showUpArrow) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                    contentDescription = if (showUpArrow) "Jump to Top" else "Jump to Bottom",
+                                    contentDescription = if (showUpArrow) L.chat.screen.jumpToTop else L.chat.screen.jumpToBottom,
                                     tint = ClaudeTerracotta,
                                     modifier = Modifier.size(22.dp)
                                 )
@@ -2541,13 +2675,18 @@ fun ChatScreen(
                     val isAtMentioning = mention != null
                     val atQuery = mention?.query ?: ""
 
-                    val fileSuggestions = remember(atQuery, chatProjectFiles, isAtMentioning) {
-                        if (!isAtMentioning || chatProjectFiles.isEmpty()) emptyList()
-                        else {
-                            chatProjectFiles.filter { file ->
-                                !file.isDir && (atQuery.isBlank() || file.name.contains(atQuery, ignoreCase = true) || file.path.contains(atQuery, ignoreCase = true))
-                            }
+                    // Nothing is loaded before an @mention: the bridge searches the project's files and folders by name
+                    // (by path when the text has a "/") once something is typed. A new keystroke (or removing the @,
+                    // sending, leaving) cancels the running search.
+                    val mentionProjectPath = activeChatProject?.path
+                    var fileSuggestions by remember { mutableStateOf<List<com.example.gemini.data.files.ExplorerEntry>>(emptyList()) }
+                    LaunchedEffect(isAtMentioning, atQuery, mentionProjectPath) {
+                        if (!isAtMentioning || atQuery.isBlank() || mentionProjectPath.isNullOrBlank()) {
+                            fileSuggestions = emptyList()
+                            return@LaunchedEffect
                         }
+                        delay(250) // wait for a pause in typing
+                        fileSuggestions = com.example.gemini.data.files.FileExplorerApi.searchFileNames(mentionProjectPath, atQuery, filesOnly = false)
                     }
 
                     androidx.compose.animation.AnimatedVisibility(
@@ -2584,7 +2723,7 @@ fun ChatScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.Description,
+                                            imageVector = if (file.isDir) Icons.Default.Folder else Icons.Default.Description,
                                             contentDescription = null,
                                             tint = ClaudeTerracotta,
                                             modifier = Modifier.size(16.dp)
@@ -2686,7 +2825,7 @@ fun ChatScreen(
                                 }
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = if (isReconnecting) "Connecting to Antigravity..." else "Antigravity Disconnected",
+                                    text = if (isReconnecting) L.chat.screen.connectingToAntigravity else L.chat.screen.antigravityDisconnected,
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.Medium,
                                     color = if (isReconnecting) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onErrorContainer,
@@ -2707,7 +2846,7 @@ fun ChatScreen(
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "Reconnect",
+                                        text = L.common.reconnect,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.error
@@ -2839,7 +2978,7 @@ fun ChatScreen(
                         onProject = { showCloudProjects = true },
                         onPreview = {
                             if (messages.isEmpty()) com.example.gemini.ui.components.AppToastHelper.showToast(
-                                "Send the cloud agent a message first: its VM starts with the chat.", com.example.gemini.ui.components.ChatToastType.INFO
+                                L.chat.screen.sendTheCloudAgentAMessage, com.example.gemini.ui.components.ChatToastType.INFO
                             ) else showCloudPreview = true
                         },
                         onRunCommand = { showCloudRunCommand = true }
@@ -2857,18 +2996,19 @@ fun ChatScreen(
                         else if (isOpenCodeChat) !openCodeState.isBlocking else if (isClaudeChat) !claudeState.isBlocking else systemConnectionState.canSend,
                     isAuth = if (isCodexChat) codexState != com.example.gemini.data.agent.codex.CodexState.SIGNED_OUT else if (isOpenCodeChat) true else if (isClaudeChat) claudeChatState != com.example.gemini.data.agent.claude.ClaudeStatus.SIGNED_OUT && claudeChatState != com.example.gemini.data.agent.claude.ClaudeStatus.SIGNING_IN else systemConnectionState.isAuth,
                     offlineMessage = if (isCodexChat) when (codexState) {
-                        com.example.gemini.data.agent.codex.CodexState.NOT_INSTALLED -> "Codex is not installed on the server. See Settings → Codex."
-                        com.example.gemini.data.agent.codex.CodexState.DISABLED, com.example.gemini.data.agent.codex.CodexState.OUTDATED -> "Restart the server to use Codex."
-                        else -> "The server is offline. Start it to send messages."
+                        com.example.gemini.data.agent.codex.CodexState.NOT_INSTALLED -> L.chat.screen.codexIsNotInstalledOnThe
+                        com.example.gemini.data.agent.codex.CodexState.DISABLED, com.example.gemini.data.agent.codex.CodexState.OUTDATED -> L.chat.screen.restartTheServerToUseCodex
+                        else -> L.chat.screen.theServerIsOfflineStartIt
                     } else if (isOpenCodeChat) when (openCodeState) {
-                        com.example.gemini.data.agent.opencode.OpenCodeState.NOT_INSTALLED -> "OpenCode is not installed on the server. See Settings → OpenCode."
-                        com.example.gemini.data.agent.opencode.OpenCodeState.DISABLED, com.example.gemini.data.agent.opencode.OpenCodeState.OUTDATED -> "Restart the server to use OpenCode."
-                        else -> "The server is offline. Start it to send messages."
+                        com.example.gemini.data.agent.opencode.OpenCodeState.NOT_INSTALLED -> L.chat.screen.opencodeIsNotInstalledOnThe
+                        com.example.gemini.data.agent.opencode.OpenCodeState.DISABLED, com.example.gemini.data.agent.opencode.OpenCodeState.OUTDATED -> L.chat.screen.restartTheServerToUseOpencode
+                        else -> L.chat.screen.theServerIsOfflineStartIt
                     } else if (isClaudeChat) when (claudeState) {
-                        com.example.gemini.data.agent.claude.ClaudeStatus.NOT_INSTALLED -> "Claude Code is not installed. Set it up in Settings."
-                        com.example.gemini.data.agent.claude.ClaudeStatus.BRIDGE_OUTDATED -> "Restart the local server to use Claude Code."
-                        else -> "The local server is offline. Start it to send messages."
-                    } else "Server is offline. Start the server to send messages.",
+                        com.example.gemini.data.agent.claude.ClaudeStatus.NOT_INSTALLED -> L.chat.screen.claudeCodeIsNotInstalledSet
+                        com.example.gemini.data.agent.claude.ClaudeStatus.BRIDGE_OUTDATED -> L.chat.screen.restartTheLocalServerToUse
+                        else -> L.chat.screen.theLocalServerIsOfflineStart
+                    } else if (agyNotInstalled) L.chat.screen.antigravityAgyIsNotInstalledInstall
+                    else L.chat.screen.serverIsOfflineStartTheServer,
                     selectedModel = currentModel,
                     quota = currentQuota,
                     thinkingPreference = thinkingPref,
@@ -2900,7 +3040,7 @@ fun ChatScreen(
                         if (unreadable.isNotEmpty()) {
                             // Claude models cannot read audio or video: say so instead of sending a file it would reject
                             com.example.gemini.ui.components.AppToastHelper.showToast(
-                                "Claude can't read audio or video files. Remove them, or tap the mic to dictate instead.",
+                                L.chat.screen.claudeCantReadAudioOrVideo,
                                 com.example.gemini.ui.components.ChatToastType.ERROR
                             )
                             return@ChatInputBar
@@ -2969,7 +3109,7 @@ fun ChatScreen(
                     val url = com.example.gemini.data.agent.agy.CloudPreviewServer.urlFor(previewConvId, port)
                     context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
                 }.onFailure {
-                    com.example.gemini.ui.components.AppToastHelper.showToast("Couldn't open the browser: ${it.message}", com.example.gemini.ui.components.ChatToastType.ERROR)
+                    com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.screen.couldntOpenTheBrowserMessage(it.message), com.example.gemini.ui.components.ChatToastType.ERROR)
                 }
             },
             onDismiss = { showCloudPreview = false }
@@ -3082,6 +3222,10 @@ fun ChatScreen(
             onLogout = {
                 viewModel.logout()
             },
+            agyStatus = agyEntry,
+            agyAuth = agyAuthInfo,
+            onAgySignOut = { viewModel.logoutFromAgyHub() },
+            onAgyCancelSignIn = { viewModel.cancelAgyLogin() },
             onToggleModelEnabled = { modelId, isEnabled ->
                 viewModel.setModelEnabled(modelId, isEnabled)
             },
@@ -3148,6 +3292,8 @@ fun ChatScreen(
             floatingSwitcherItems = floatingSwitcherItems,
             floatingSwitcherAutoCollapseSec = floatingSwitcherAutoCollapseSec,
             onSetFloatingSwitcherOrientation = { viewModel.setFloatingSwitcherOrientation(it) },
+            floatingSwitcherHandleIcon = floatingSwitcherHandleIcon,
+            onSetFloatingSwitcherHandleIcon = { viewModel.setFloatingSwitcherHandleIcon(it) },
             onSetFloatingSwitcherItems = { viewModel.setFloatingSwitcherItems(it) },
             onSetFloatingSwitcherAutoCollapseSec = { viewModel.setFloatingSwitcherAutoCollapseSec(it) },
             onResetFloatingSwitcherPosition = { viewModel.resetFloatingSwitcherPosition() },
@@ -3177,8 +3323,12 @@ fun ChatScreen(
             onAddPermissionRule = { action, pattern, decision -> viewModel.addGlobalPermissionGrant(action, pattern, decision) },
             onRemovePermissionRule = { rawRule -> viewModel.removeGlobalPermissionGrant(rawRule) },
             onChangePermissionRuleDecision = { rawRule, newDecision -> viewModel.changeGlobalPermissionGrantDecision(rawRule, newDecision) },
-            groupChatsByWorkspace = groupChatsByWorkspace,
-            onToggleGroupChatsByWorkspace = { viewModel.setGroupChatsByWorkspace(it) },
+            groupAgentSteps = groupAgentSteps,
+            onToggleGroupAgentSteps = { viewModel.setGroupAgentSteps(it) },
+            groupStepsMin = groupStepsMin,
+            onSetGroupStepsMin = { viewModel.setGroupStepsMin(it) },
+            showMessageStats = showMessageStats,
+            onToggleShowMessageStats = { viewModel.setShowMessageStats(it) },
             isFloatingDiagnosticsEnabled = isFloatingDiagnosticsEnabled,
             onToggleFloatingDiagnostics = { viewModel.setFloatingDiagnosticsEnabled(it) },
             isNetworkInspectorEnabled = isNetworkInspectorEnabled,
@@ -3199,7 +3349,7 @@ fun ChatScreen(
             isApplyingAgents = isApplyingAgents,
             onApplyAgents = { viewModel.applyAgents(it) },
             onOpenProject = { project ->
-                TermuxDaemonManager.setActiveProject(project)
+                IdeDaemonManager.setActiveProject(project)
                 viewModel.onProjectChanged(project.path)
             },
             onDismiss = {
@@ -3249,17 +3399,21 @@ fun ChatScreen(
             claudeStatus = claudeStatus,
             onAgySignOut = { viewModel.logoutFromAgyHub() },
             onAgyCancelSignIn = { viewModel.cancelAgyLogin() },
+            onAgySettings = {
+                scope.launch { drawerState.close() }
+                requestedSettingsSection = com.example.gemini.ui.settings.SettingsSection.ANTIGRAVITY
+                showSettingsDialog = true
+            },
             onClaudeSignOut = { viewModel.claudeAccount.logout() },
             onClaudeSettings = {
                 scope.launch { drawerState.close() }
-                openClaudeSetup()
+                requestedSettingsSection = com.example.gemini.ui.settings.SettingsSection.CLAUDE
+                showSettingsDialog = true
             },
             onDismiss = { showAccountsDialog = false },
             openCode = openCodeEntry,
             openCodeFacts = listOfNotNull(
-                openCodeStatus?.version?.let { "OpenCode $it" },
-                openCodeConnected.takeIf { it.isNotEmpty() }?.let { if (it.size <= 2) it.joinToString(", ") else "${it.size} providers" },
-                openCodeModelCount.takeIf { it > 0 }?.let { "$it models" }
+                openCodeStatus?.version?.let { "CLI $it" }
             ),
             onOpenCodeSettings = {
                 scope.launch { drawerState.close() }
@@ -3270,8 +3424,7 @@ fun ChatScreen(
             codexEmail = codexAccount?.email,
             codexFacts = listOfNotNull(
                 codexAccount?.plan?.replaceFirstChar { it.uppercase() }?.let { "$it plan" },
-                codexStatus?.version?.let { "Codex $it" },
-                codexLimits?.primary?.let { "${it.usedPercent.toInt()}% of limit used" }
+                codexStatus?.version?.let { "CLI $it" }
             ),
             onCodexSignOut = { viewModel.codexBackend.logout() },
             onCodexSettings = {
@@ -3321,7 +3474,7 @@ fun ChatScreen(
             containerColor = MaterialTheme.colorScheme.surface,
             title = {
                 Text(
-                    text = if (action.type == MessageActionType.EDIT) "Edit Message?" else "Regenerate Response?",
+                    text = if (action.type == MessageActionType.EDIT) L.chat.screen.editMessage else L.chat.screen.regenerateResponse,
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp
                 )
@@ -3331,13 +3484,13 @@ fun ChatScreen(
                     Text(
                         text = when {
                             (isClaudeChat || isOpenCodeChat || isCodexChat) && action.type == MessageActionType.EDIT ->
-                                "This chat goes back to right before this message, so you can change it and send again. Everything after it is removed from the chat. Files stay as they are."
+                                L.chat.screen.thisChatGoesBackToRight
                             isClaudeChat || isOpenCodeChat || isCodexChat ->
-                                "This chat goes back to right before this reply and ${if (isOpenCodeChat) "OpenCode" else if (isCodexChat) "Codex" else "Claude"} answers the same message again. The current reply is removed from the chat."
+                                L.chat.screen.thisChatGoesBackToRight2(if (isOpenCodeChat) "OpenCode" else if (isCodexChat) L.chat.screen.codex else L.chat.screen.claude)
                             action.type == MessageActionType.EDIT ->
-                                "Editing this message will delete the subsequent response so you can edit and send a fresh query. Do you want to continue?"
+                                L.chat.screen.editingThisMessageWillDeleteThe
                             else ->
-                                "Retrying will delete the current response and regenerate a fresh answer. Do you want to continue?"
+                                L.chat.screen.retryingWillDeleteTheCurrentResponse
                         },
                         fontSize = 14.5.sp,
                         lineHeight = 21.sp,
@@ -3359,7 +3512,7 @@ fun ChatScreen(
                         ) {
                             Icon(androidx.compose.material.icons.Icons.Outlined.History, null, tint = com.example.gemini.theme.AppColors.info, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Put files back too? Use this message's restore point", fontSize = 13.5.sp, color = com.example.gemini.theme.AppColors.info)
+                            Text(L.chat.screen.putFilesBackTooUseThis, fontSize = 13.5.sp, color = com.example.gemini.theme.AppColors.info)
                         }
                     }
                 }
@@ -3385,9 +3538,9 @@ fun ChatScreen(
                 ) {
                     Text(
                         text = when {
-                            (isClaudeChat || isOpenCodeChat || isCodexChat) && action.type == MessageActionType.EDIT -> "Edit"
-                            action.type == MessageActionType.EDIT -> "Edit & Delete"
-                            else -> "Regenerate"
+                            (isClaudeChat || isOpenCodeChat || isCodexChat) && action.type == MessageActionType.EDIT -> L.common.edit
+                            action.type == MessageActionType.EDIT -> L.chat.screen.editDelete
+                            else -> L.chat.screen.regenerate
                         },
                         color = ClaudeTerracotta,
                         fontWeight = FontWeight.Bold
@@ -3396,7 +3549,7 @@ fun ChatScreen(
             },
             dismissButton = {
                 TextButton(onClick = { pendingMessageAction = null }) {
-                    Text(text = "Cancel", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    Text(text = L.common.cancel, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 }
             }
         )
@@ -3418,7 +3571,7 @@ fun ChatScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Stop Generation?",
+                        text = L.chat.screen.stopGeneration,
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.5.sp
                     )
@@ -3426,7 +3579,7 @@ fun ChatScreen(
             },
             text = {
                 Text(
-                    text = "Do you want to stop the model from outputting? The current generation will be stopped immediately.",
+                    text = L.chat.screen.doYouWantToStopThe,
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
@@ -3442,7 +3595,7 @@ fun ChatScreen(
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Text(
-                        text = "Stop Output",
+                        text = L.chat.screen.stopOutput,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onError
                     )
@@ -3450,7 +3603,7 @@ fun ChatScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showStopConfirmDialog = false }) {
-                    Text(text = "Cancel", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    Text(text = L.common.cancel, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 }
             }
         )
@@ -3474,7 +3627,7 @@ fun ChatScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Command Terminated",
+                        text = L.chat.screen.commandTerminated,
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.sp
                     )
@@ -3483,7 +3636,7 @@ fun ChatScreen(
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "You stopped the running command:",
+                        text = L.chat.screen.youStoppedTheRunningCommand,
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3504,7 +3657,7 @@ fun ChatScreen(
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Explain why or give new instructions to AI (optional):",
+                        text = L.chat.screen.explainWhyOrGiveNewInstructions,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3512,7 +3665,7 @@ fun ChatScreen(
                     OutlinedTextField(
                         value = userFeedback,
                         onValueChange = { userFeedback = it },
-                        placeholder = { Text("e.g. It was taking too long, please use grep or find a faster way...", fontSize = 12.5.sp) },
+                        placeholder = { Text(L.chat.screen.eGItWasTakingToo, fontSize = 12.5.sp) },
                         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
                         modifier = Modifier.fillMaxWidth(),
                         maxLines = 3,
@@ -3528,14 +3681,14 @@ fun ChatScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text(text = "Send to AI & Proceed", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                    Text(text = L.chat.screen.sendToAiProceed, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = { viewModel.dismissTerminatedToolDialog() }
                 ) {
-                    Text(text = "Stop Turn Here", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), fontSize = 12.5.sp)
+                    Text(text = L.chat.screen.stopTurnHere, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), fontSize = 12.5.sp)
                 }
             }
         )
@@ -3555,6 +3708,12 @@ fun ChatScreen(
 
 
     // Fully Working Local Terminal (Termux Shell with close button above)
+    // the terminal drawer's gear: close the terminal, show Settings → Terminal
+    val openTerminalSettingsFromTerminal: () -> Unit = {
+        showLocalTerminalDialog = false
+        requestedSettingsSection = com.example.gemini.ui.settings.SettingsSection.TERMINAL
+        showSettingsDialog = true
+    }
     if (showLocalTerminalDialog) {
         if (isInFloatingWindow) {
             Surface(
@@ -3564,12 +3723,14 @@ fun ChatScreen(
                 color = MaterialTheme.colorScheme.background
             ) {
                 LocalTerminalContent(
-                    onClose = { showLocalTerminalDialog = false }
+                    onClose = { showLocalTerminalDialog = false },
+                    onOpenSettings = openTerminalSettingsFromTerminal
                 )
             }
         } else {
             LocalTerminalDialog(
-                onDismiss = { showLocalTerminalDialog = false }
+                onDismiss = { showLocalTerminalDialog = false },
+                onOpenSettings = openTerminalSettingsFromTerminal
             )
         }
     }
@@ -3626,6 +3787,27 @@ fun ChatScreen(
         )
     }
 
+    // "Meet Gemmy": once the whole first-launch setup is done and the user is in chat, ask once whether to show the
+    // floating buddy (on by default, can be turned off right there). Gemmy itself only appears after this is answered.
+    val gemmyIntroDue = !hasSeenGemmyIntro && hasChosenAgents && !agentStepPending && !launcherStepPending &&
+        !isApplyingAgents && !isInFloatingWindow
+    var showGemmyIntro by remember { mutableStateOf(false) }
+    LaunchedEffect(gemmyIntroDue) {
+        if (gemmyIntroDue) delay(700) // let the chat settle after the setup steps
+        showGemmyIntro = gemmyIntroDue
+    }
+    if (showGemmyIntro && gemmyIntroDue) {
+        com.example.gemini.ui.onboarding.GemmyIntroDialog(
+            onConfirm = { enabled ->
+                showGemmyIntro = false
+                scope.launch {
+                    viewModel.authPreferences.setGemmyEnabled(enabled)
+                    viewModel.authPreferences.setHasSeenGemmyIntro(true)
+                }
+            }
+        )
+    }
+
     // Attachment Selector Bottom Sheet
     if (showAttachmentSelector) {
         AttachmentSelectorBottomSheet(
@@ -3641,12 +3823,12 @@ fun ChatScreen(
     if (showAttachFromFiles) {
         com.example.gemini.ui.files.FileExplorerDialog(
             stateKey = "chat_attach",
-            title = "Attach files",
+            title = L.chat.screen.attachFiles,
             onPickFiles = { picked ->
                 showAttachFromFiles = false
                 viewModel.addExplorerFiles(picked)
             },
-            pickFilesLabel = "Attach",
+            pickFilesLabel = L.chat.screen.attach,
             showClipboard = false,
             onDismiss = { showAttachFromFiles = false }
         )
@@ -3671,7 +3853,7 @@ fun ChatScreen(
                 activeMarkdownDoc = null
                 scope.launch {
                     val content = try { File(path).readText() } catch (e: Exception) { docContent }
-                    TermuxDaemonManager.openOrSelectTab(path, File(path).name, content)
+                    IdeDaemonManager.openOrSelectTab(path, File(path).name, content)
                     onNavigateToIde()
                 }
             }
@@ -3688,7 +3870,7 @@ fun ChatScreen(
                 viewModel.dismissIncomingMarkdownPreview()
                 scope.launch {
                     val content = try { File(path).readText() } catch (e: Exception) { docContent }
-                    TermuxDaemonManager.openOrSelectTab(path, File(path).name, content)
+                    IdeDaemonManager.openOrSelectTab(path, File(path).name, content)
                     onNavigateToIde()
                 }
             }
@@ -3762,7 +3944,7 @@ fun ChatScreen(
             activeProject = if (chatCloudId != null) null else activeProj,
             onSelectProject = { proj ->
                 if (isAgyChat) viewModel.agyBackend.setNewChatCloudProject(null)
-                TermuxDaemonManager.setActiveProject(proj)
+                IdeDaemonManager.setActiveProject(proj)
                 viewModel.onProjectChanged(proj?.path ?: "")
                 showProjectPickerDialog = false
             },
@@ -3779,7 +3961,7 @@ fun ChatScreen(
             },
             onRefresh = {
                 scope.launch {
-                    TermuxDaemonManager.loadProjects(conversations)
+                    IdeDaemonManager.loadProjects(conversations)
                 }
             },
             onDismiss = { showProjectPickerDialog = false }
@@ -3790,7 +3972,7 @@ fun ChatScreen(
         com.example.gemini.ui.components.GitCloneDialog(
             onCloned = { clonedProj ->
                 showGitCloneDialog = false
-                TermuxDaemonManager.setActiveProject(clonedProj)
+                IdeDaemonManager.setActiveProject(clonedProj)
                 viewModel.onProjectChanged(clonedProj.path)
             },
             onDismiss = { showGitCloneDialog = false }
@@ -3800,12 +3982,12 @@ fun ChatScreen(
     if (showWorkspaceFolderBrowserDialog) {
         com.example.gemini.ui.files.FileExplorerDialog(
             stateKey = "chat_workspace",
-            title = "Choose the chat's project folder",
-            confirmLabel = "Use this folder",
+            title = L.chat.screen.chooseTheChatsProjectFolder,
+            confirmLabel = L.chat.screen.useThisFolder,
             onConfirmFolder = { folder ->
                 showWorkspaceFolderBrowserDialog = false
                 val selectedProj = ProjectItem(File(folder).name.ifBlank { folder }, folder)
-                TermuxDaemonManager.setActiveProject(selectedProj)
+                IdeDaemonManager.setActiveProject(selectedProj)
                 viewModel.onProjectChanged(selectedProj.path)
             },
             onOpenedInIde = {
@@ -3814,7 +3996,7 @@ fun ChatScreen(
             },
             onProjectCreated = { created ->
                 showWorkspaceFolderBrowserDialog = false
-                TermuxDaemonManager.setActiveProject(created)
+                IdeDaemonManager.setActiveProject(created)
                 viewModel.onProjectChanged(created.path)
             },
             onDismiss = { showWorkspaceFolderBrowserDialog = false }
@@ -3921,6 +4103,9 @@ fun ChatScreen(
         )
     }
 
+    // Connect to PC: a PC in use that cannot be reached after the app opened asks what to do
+    if (pcConnectEnabled) com.example.gemini.ui.pc.PcUnreachablePrompt()
+
     // Connect to PC: the side bar's sheet (switch PC, add one, back to this phone)
     if (showPcSheet) {
         com.example.gemini.ui.pc.PcQuickSheet(
@@ -4013,7 +4198,7 @@ fun ChatToastBanner(
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Close,
-                    contentDescription = "Dismiss",
+                    contentDescription = L.common.dismiss,
                     tint = textColor.copy(alpha = 0.6f),
                     modifier = Modifier.size(16.dp)
                 )
@@ -4030,19 +4215,6 @@ private data class SlashTrigger(val index: Int, val query: String, val nothingBe
 
 /** An `@file` mention being typed (no space after it yet): where its `@` is and the text after it. */
 private data class MentionTrigger(val index: Int, val query: String)
-
-private fun flattenFileNodes(nodes: List<com.example.gemini.data.daemon.FileNode>): List<com.example.gemini.data.daemon.FileNode> {
-    val result = mutableListOf<com.example.gemini.data.daemon.FileNode>()
-    for (node in nodes) {
-        if (!node.isDir) {
-            result.add(node)
-        }
-        if (node.children.isNotEmpty()) {
-            result.addAll(flattenFileNodes(node.children))
-        }
-    }
-    return result
-}
 
 /**
  * A file link from a chat as a full path: a relative one ([Foo.kt](src/Foo.kt), as VS Code chats write them) is a file
