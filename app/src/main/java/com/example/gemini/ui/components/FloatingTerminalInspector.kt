@@ -39,6 +39,7 @@ import com.example.gemini.data.ssh.*
 import com.example.gemini.theme.*
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
+import com.example.gemini.i18n.L
 
 /**
  * Floating Dockable Terminal HUD & Multi-Tab Inspector for Termux SSH sessions.
@@ -49,9 +50,9 @@ fun FloatingTerminalInspector(
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
-    val tabs by TermuxSshManager.tabs.collectAsState()
-    val activeTabId by TermuxSshManager.activeTabId.collectAsState()
-    val connectionStatus by TermuxSshManager.connectionStatus.collectAsState()
+    val tabs by SshSessionManager.tabs.collectAsState()
+    val activeTabId by SshSessionManager.activeTabId.collectAsState()
+    val connectionStatus by SshSessionManager.connectionStatus.collectAsState()
     var isInspectorOpen by remember { mutableStateOf(false) }
 
     val isTerminalEnabled by authPreferences.isTerminalToolEnabled.collectAsState(initial = false)
@@ -109,7 +110,7 @@ fun FloatingTerminalInspector(
                 val hudLabel = when {
                     runningCommandsCount > 0 -> "$runningCommandsCount running"
                     tabs.size > 1 -> "${tabs.size} sessions"
-                    else -> "Termux"
+                    else -> L.common.termux
                 }
 
                 Text(
@@ -123,7 +124,7 @@ fun FloatingTerminalInspector(
 
                 Icon(
                     imageVector = Icons.Default.Terminal,
-                    contentDescription = "Terminal",
+                    contentDescription = L.common.terminal,
                     tint = ClaudeTerracotta,
                     modifier = Modifier.size(14.dp)
                 )
@@ -148,8 +149,8 @@ fun TerminalInspectorDialog(
     authPreferences: AuthPreferences,
     onDismiss: () -> Unit
 ) {
-    val tabs by TermuxSshManager.tabs.collectAsState()
-    val activeTabId by TermuxSshManager.activeTabId.collectAsState()
+    val tabs by SshSessionManager.tabs.collectAsState()
+    val activeTabId by SshSessionManager.activeTabId.collectAsState()
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -159,10 +160,10 @@ fun TerminalInspectorDialog(
             tabs = tabs,
             activeTabId = activeTabId,
             authPreferences = authPreferences,
-            onSelectTab = { TermuxSshManager.selectTab(it) },
-            onCreateTab = { TermuxSshManager.createTab() },
-            onCloseTab = { TermuxSshManager.closeTab(it) },
-            onClearTab = { TermuxSshManager.clearTabCommands(it) },
+            onSelectTab = { SshSessionManager.selectTab(it) },
+            onCreateTab = { SshSessionManager.createTab() },
+            onCloseTab = { SshSessionManager.closeTab(it) },
+            onClearTab = { SshSessionManager.clearTabCommands(it) },
             onDismiss = onDismiss
         )
     }
@@ -223,7 +224,7 @@ private fun TerminalInspectorDialogContent(
                 Spacer(modifier = Modifier.width(8.dp))
 
                 Text(
-                    text = "Termux SSH Terminal",
+                    text = L.components.floatingTerminalInspector.termuxSshTerminal,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
@@ -237,7 +238,7 @@ private fun TerminalInspectorDialogContent(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = "Close",
+                        contentDescription = L.common.close,
                         tint = Color.Gray,
                         modifier = Modifier.size(18.dp)
                     )
@@ -301,7 +302,7 @@ private fun TerminalInspectorDialogContent(
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Icon(
                                     imageVector = Icons.Default.Close,
-                                    contentDescription = "Close Tab",
+                                    contentDescription = L.common.closeTab,
                                     tint = Color.Gray,
                                     modifier = Modifier
                                         .size(13.dp)
@@ -327,7 +328,7 @@ private fun TerminalInspectorDialogContent(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
-                            contentDescription = "New Session",
+                            contentDescription = L.components.floatingTerminalInspector.newSession,
                             tint = ClaudeTerracotta,
                             modifier = Modifier.size(15.dp)
                         )
@@ -368,7 +369,7 @@ private fun TerminalInspectorDialogContent(
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.DeleteSweep,
-                                contentDescription = "Clear Tab History",
+                                contentDescription = L.components.floatingTerminalInspector.clearTabHistory,
                                 tint = Color.Gray,
                                 modifier = Modifier.size(15.dp)
                             )
@@ -399,12 +400,12 @@ private fun TerminalInspectorDialogContent(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Session ready.",
+                            text = L.components.floatingTerminalInspector.sessionReady,
                             fontSize = 13.sp,
                             color = Color.Gray
                         )
                         Text(
-                            text = "AI tool commands and manual commands will output here.",
+                            text = L.components.floatingTerminalInspector.aiToolCommandsAndManualCommands,
                             fontSize = 11.5.sp,
                             color = Color.DarkGray
                         )
@@ -418,7 +419,7 @@ private fun TerminalInspectorDialogContent(
                         items(activeTab.commands, key = { it.id }) { cmd ->
                             TerminalCommandCard(
                                 command = cmd,
-                                onKill = { TermuxSshManager.killCommand(cmd.id) }
+                                onKill = { SshSessionManager.killCommand(cmd.id) }
                             )
                         }
                     }
@@ -449,7 +450,7 @@ private fun TerminalInspectorDialogContent(
                     OutlinedTextField(
                         value = commandInput,
                         onValueChange = { commandInput = it },
-                        placeholder = { Text("Run bash command in Termux...", fontSize = 12.5.sp, color = Color.Gray) },
+                        placeholder = { Text(L.components.floatingTerminalInspector.runBashCommandInTermux, fontSize = 12.5.sp, color = Color.Gray) },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
@@ -476,7 +477,7 @@ private fun TerminalInspectorDialogContent(
                                     val pass = authPreferences.termuxSshPass.firstOrNull() ?: "root"
 
                                     commandInput = ""
-                                    TermuxSshManager.executeCommand(
+                                    SshSessionManager.executeCommand(
                                         command = cmd,
                                         host = host,
                                         port = port,
@@ -497,14 +498,14 @@ private fun TerminalInspectorDialogContent(
                         if (isExecutingManual) {
                             Icon(
                                 imageVector = Icons.Default.HourglassTop,
-                                contentDescription = "Running",
+                                contentDescription = L.common.running,
                                 tint = Color.White,
                                 modifier = Modifier.size(16.dp)
                             )
                         } else {
                             Icon(
                                 imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "Run",
+                                contentDescription = L.common.run,
                                 tint = Color.White,
                                 modifier = Modifier.size(18.dp)
                             )
@@ -588,7 +589,7 @@ private fun TerminalCommandCard(
                     ) {
                         Icon(
                             imageVector = Icons.Default.StopCircle,
-                            contentDescription = "Kill Process",
+                            contentDescription = L.components.floatingTerminalInspector.killProcess,
                             tint = Color.Red,
                             modifier = Modifier.size(16.dp)
                         )
@@ -600,13 +601,13 @@ private fun TerminalCommandCard(
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         val clip = ClipData.newPlainText("Output", command.output)
                         clipboard.setPrimaryClip(clip)
-                        Toast.makeText(context, "Output copied", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, L.components.floatingTerminalInspector.outputCopied, Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.size(22.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.ContentCopy,
-                        contentDescription = "Copy",
+                        contentDescription = L.common.copy,
                         tint = Color.Gray,
                         modifier = Modifier.size(13.dp)
                     )
@@ -624,7 +625,7 @@ private fun TerminalCommandCard(
             ) {
                 if (command.output.isEmpty()) {
                     Text(
-                        text = if (isRunning) "Running in Termux..." else "(No output)",
+                        text = if (isRunning) L.components.floatingTerminalInspector.runningInTermux else L.components.floatingTerminalInspector.noOutput,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
                         color = Color.Gray
