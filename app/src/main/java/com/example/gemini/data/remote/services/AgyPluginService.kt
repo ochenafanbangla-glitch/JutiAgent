@@ -18,6 +18,7 @@ import okio.ByteString
 import okio.ByteString.Companion.decodeBase64
 import org.json.JSONArray
 import org.json.JSONObject
+import com.example.gemini.i18n.L
 
 /**
  * Service for Google Plugins, Cascade Marketplace, Skills, and MCP auto-configuration.
@@ -110,8 +111,8 @@ class AgyPluginService(
         }
 
         // 3. Android / Termux standard sandboxes
-        list.add("file:///data/data/com.termux/files/home/.gemini/config/mcp_config.json")
-        list.add("file:///data/user/0/com.termux/files/home/.gemini/config/mcp_config.json")
+        list.add("file:///data/data/${com.example.gemini.BuildConfig.APPLICATION_ID}/files/home/.gemini/config/mcp_config.json")
+        list.add("file:///data/user/0/${com.example.gemini.BuildConfig.APPLICATION_ID}/files/home/.gemini/config/mcp_config.json")
 
         // 4. Java user.home
         val userHome = System.getProperty("user.home")
@@ -186,15 +187,15 @@ class AgyPluginService(
 
                     val envMap = cmdEntry.env.toMutableMap()
                     // Android / Termux environment loader injection
-                    val isAndroidTermux = java.io.File("/data/data/com.termux/files/usr/lib/libtermux-exec.so").exists() ||
+                    val isAndroidTermux = java.io.File("/data/data/${com.example.gemini.BuildConfig.APPLICATION_ID}/files/usr/lib/libtermux-exec.so").exists() ||
                                           System.getenv("PREFIX") != null ||
                                           (System.getProperty("java.vendor")?.contains("Android", ignoreCase = true) == true)
-                    if (isAndroidTermux && !AuthPreferences.currentRemoteMode) {
-                        if (!envMap.containsKey("LD_PRELOAD") && java.io.File("/data/data/com.termux/files/usr/lib/libtermux-exec.so").exists()) {
-                            envMap["LD_PRELOAD"] = "/data/data/com.termux/files/usr/lib/libtermux-exec.so"
+                    if (isAndroidTermux && !AuthPreferences.currentRemoteMode && !com.example.gemini.data.local.chroot.ChrootManager.isActiveNow()) {
+                        if (!envMap.containsKey("LD_PRELOAD") && java.io.File("/data/data/${com.example.gemini.BuildConfig.APPLICATION_ID}/files/usr/lib/libtermux-exec.so").exists()) {
+                            envMap["LD_PRELOAD"] = "/data/data/${com.example.gemini.BuildConfig.APPLICATION_ID}/files/usr/lib/libtermux-exec.so"
                         }
                         if (!envMap.containsKey("PATH")) {
-                            envMap["PATH"] = "/data/data/com.termux/files/home/.local/bin:/data/data/com.termux/files/usr/bin:/system/bin"
+                            envMap["PATH"] = "/data/data/${com.example.gemini.BuildConfig.APPLICATION_ID}/files/home/.local/bin:/data/data/${com.example.gemini.BuildConfig.APPLICATION_ID}/files/usr/bin:/system/bin"
                         }
                     }
 
@@ -322,9 +323,9 @@ class AgyPluginService(
         AgyLanguageService.DownloadBuildWithGooglePlugin().executeSafely(req).map { res ->
             if (res.success) {
                 mcpService.refreshMcpServers(hubUrl)
-                res.message.ifBlank { "Plugin installed successfully" }
+                res.message.ifBlank { L.remote.agyPluginService.pluginInstalledSuccessfully }
             } else {
-                throw Exception(res.message.ifBlank { "Download failed" })
+                throw Exception(res.message.ifBlank { L.remote.agyPluginService.downloadFailed })
             }
         }
     }
@@ -340,9 +341,9 @@ class AgyPluginService(
         AgyLanguageService.DeletePlugin().executeSafely(req).map { res ->
             if (res.success) {
                 mcpService.refreshMcpServers(hubUrl)
-                res.message.ifBlank { "Plugin deleted successfully" }
+                res.message.ifBlank { L.remote.agyPluginService.pluginDeletedSuccessfully }
             } else {
-                throw Exception(res.message.ifBlank { "Delete failed" })
+                throw Exception(res.message.ifBlank { L.remote.agyPluginService.deleteFailed })
             }
         }
     }
