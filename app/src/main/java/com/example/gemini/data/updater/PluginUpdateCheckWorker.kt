@@ -22,6 +22,7 @@ import com.example.gemini.ui.browser.PluginRepositories
 import com.example.gemini.ui.browser.PluginVersions
 import com.example.gemini.ui.browser.RepoPlugin
 import java.util.concurrent.TimeUnit
+import com.example.gemini.i18n.L
 
 private const val WORK_NAME = "plugin_update_check"
 private const val CHANNEL_ID = "plugin_updates"
@@ -57,7 +58,7 @@ class PluginUpdateCheckWorker(context: Context, params: WorkerParameters) : Coro
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(CHANNEL_ID, "Plugin Updates", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "Notifies when an installed plugin has a new version in its repository"
+                description = L.updater.pluginUpdateCheckWorker.notifiesWhenAnInstalledPluginHas
             }
             context.getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
@@ -72,12 +73,10 @@ class PluginUpdateCheckWorker(context: Context, params: WorkerParameters) : Coro
         val change = "${PluginVersions.label(extension.version)} → ${PluginVersions.label(offered.version)}"
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Plugin update: $name")
-            .setContentText("$change · update it in Settings → Plugins")
+            .setContentTitle(L.updater.pluginUpdateCheckWorker.pluginUpdateName(name))
+            .setContentText(L.updater.pluginUpdateCheckWorker.changeUpdateItInSettingsPlugins(change))
             .setStyle(NotificationCompat.BigTextStyle().bigText(
-                "$change is available from ${extension.source?.repo}." +
-                    (if (offered.description.isNotBlank()) "\n${offered.description}" else "") +
-                    "\nUpdate it in Settings → Plugins."
+                L.updater.pluginUpdateCheckWorker.changeIsAvailableFromRepoValue(change, extension.source?.repo, (if (offered.description.isNotBlank()) "\n${offered.description}" else ""))
             ))
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
