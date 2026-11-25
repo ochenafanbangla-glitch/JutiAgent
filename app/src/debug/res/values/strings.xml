@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- debug builds install over the release app here: a different name to tell them apart -->
+    <string name="app_name">JutiAgent Dev</string>
+</resources>
