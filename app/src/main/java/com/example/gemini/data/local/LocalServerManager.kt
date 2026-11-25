@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import com.example.gemini.data.preferences.AuthPreferences
 import com.example.gemini.data.remote.AgyBridgeService
+import com.example.gemini.data.local.chroot.ChrootManager
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -50,8 +51,12 @@ object LocalServerManager {
 
     private const val PREFS_NAME = "local_server_prefs"
     private const val KEY_BRIDGE_LAST_UPDATE_TIME = "bridge_last_update_time"
+    /** The command the Ubuntu chroot's bridge was last started with (a running one is reused only with the same). */
+    private const val KEY_CHROOT_BRIDGE_COMMAND = "chroot_bridge_command"
 
     fun hasServerScript(context: Context): Boolean {
+        // the chroot gets this app's Linux bridge at every start (ChrootManager.start)
+        if (ChrootManager.isActive(context)) return true
         val binBridge = File(LocalEnvironmentManager.getBinDir(context), "agy_ide_bridge")
         if (binBridge.exists()) return true
         return try {
@@ -93,7 +98,12 @@ object LocalServerManager {
         }
     }
 
-    private fun ensureBridgeBinary(context: Context) {
+    /** Unpacks the IDE bridge (and the helper scripts) after an app update. Also called by TermuxRelocation: the bridge holds the fast .deb relocator its hooks run. */
+    private val bridgeUnpackLock = Any()
+
+    internal fun ensureBridgeBinary(context: Context) = synchronized(bridgeUnpackLock) { unpackBridgeIfNeeded(context) }
+
+    private fun unpackBridgeIfNeeded(context: Context) {
         val binDir = LocalEnvironmentManager.getBinDir(context)
         val bridgeFile = File(binDir, "agy_ide_bridge")
         val backupFile = File(binDir, "backup_bootstrap")
@@ -101,7 +111,6 @@ object LocalServerManager {
         val restoreChatsFile = File(binDir, "restore_chats")
         val backupProjectsFile = File(binDir, "backup_projects")
         val restoreProjectsFile = File(binDir, "restore_projects")
-        val backupProotUbuntuFile = File(binDir, "backup_proot_ubuntu")
         val gitCloneFile = File(binDir, "git_clone")
 
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -122,7 +131,7 @@ object LocalServerManager {
         val currentAppUpdateTime = packageInfo?.lastUpdateTime ?: 0L
 
         val needsCopy =
-            !bridgeFile.exists() || !backupFile.exists() || !backupChatsFile.exists() || !restoreChatsFile.exists() || !backupProjectsFile.exists() || !restoreProjectsFile.exists() || !backupProotUbuntuFile.exists() || !gitCloneFile.exists() || (currentAppUpdateTime > 0L && currentAppUpdateTime != lastSavedUpdate)
+            !bridgeFile.exists() || !backupFile.exists() || !backupChatsFile.exists() || !restoreChatsFile.exists() || !backupProjectsFile.exists() || !restoreProjectsFile.exists() || !gitCloneFile.exists() || (currentAppUpdateTime > 0L && currentAppUpdateTime != lastSavedUpdate)
 
         if (needsCopy) {
             try {
@@ -154,11 +163,6 @@ object LocalServerManager {
                     extractAssetToBin(context, binDir, "restore_projects")
                 } catch (e: Exception) {
                     Log.w(TAG, "restore_projects asset not extracted", e)
-                }
-                try {
-                    extractAssetToBin(context, binDir, "backup_proot_ubuntu")
-                } catch (e: Exception) {
-                    Log.w(TAG, "backup_proot_ubuntu asset not extracted", e)
                 }
                 try {
                     extractAssetToBin(context, binDir, "git_clone")
@@ -211,9 +215,16 @@ object LocalServerManager {
 
     private fun resolveServerCommand(context: Context): String? {
         val authPrefs = AuthPreferences(context)
-        val bridgeCmd =
+        // the chroot is a plain Linux system with its own agent paths (Where agents run → Agent paths); blank = where
+        // each agent's own installer puts it in the chroot's home
+        val isChroot = ChrootManager.isActive(context)
+        val bridgeCmd = if (isChroot) {
+            authPrefs.getChrootBridgeBinSync().trim().ifBlank { ChrootManager.BRIDGE_IN_CHROOT }
+        } else {
             authPrefs.getAgyBridgeBinaryPathSync().trim().ifBlank { AuthPreferences.DEFAULT_BRIDGE_BINARY_PATH }
-        val agyCmd = authPrefs.getAgyBinaryPathSync().trim().ifBlank { AuthPreferences.DEFAULT_AGY_BINARY_PATH }
+        }
+        val agyCmd = if (isChroot) authPrefs.getChrootAgyBinSync().trim().ifBlank { com.example.gemini.data.remote.RemoteServerManager.DEFAULT_AGY_BIN }
+            else authPrefs.getAgyBinaryPathSync().trim().ifBlank { AuthPreferences.DEFAULT_AGY_BINARY_PATH }
 
         val token = authPrefs.getSecurityTokenSync()
         val bridgePort = try {
@@ -233,21 +244,24 @@ object LocalServerManager {
         } else {
             ""
         }
-        val claudeCmd = authPrefs.getClaudeBinaryPathSync().trim()
+        val claudeCmd = if (isChroot) authPrefs.getChrootClaudeBinSync().trim().ifBlank { com.example.gemini.data.remote.RemoteServerManager.DEFAULT_CLAUDE_BIN }
+            else authPrefs.getClaudeBinaryPathSync().trim()
         val claudeBinParam = if (claudeCmd.isNotBlank() && com.example.gemini.domain.model.AgentKind.CLAUDE in com.example.gemini.data.agent.AgentPreferences.enabledSync(context)) {
             " --claude-bin \"$claudeCmd\""
         } else {
             ""
         }
 
-        val openCodeCmd = authPrefs.getOpenCodeBinaryPathSync().trim()
+        val openCodeCmd = if (isChroot) authPrefs.getChrootOpenCodeBinSync().trim().ifBlank { com.example.gemini.data.remote.RemoteServerManager.DEFAULT_OPENCODE_BIN }
+            else authPrefs.getOpenCodeBinaryPathSync().trim()
         val openCodeBinParam = if (openCodeCmd.isNotBlank() && com.example.gemini.domain.model.AgentKind.OPENCODE in com.example.gemini.data.agent.AgentPreferences.enabledSync(context)) {
             " --opencode-bin \"$openCodeCmd\""
         } else {
             ""
         }
 
-        val codexCmd = authPrefs.getCodexBinaryPathSync().trim()
+        val codexCmd = if (isChroot) authPrefs.getChrootCodexBinSync().trim().ifBlank { com.example.gemini.data.remote.RemoteServerManager.DEFAULT_CODEX_BIN }
+            else authPrefs.getCodexBinaryPathSync().trim()
         val codexBinParam = if (codexCmd.isNotBlank() && com.example.gemini.domain.model.AgentKind.CODEX in com.example.gemini.data.agent.AgentPreferences.enabledSync(context)) {
             " --codex-bin \"$codexCmd\""
         } else {
@@ -290,7 +304,8 @@ object LocalServerManager {
         val session = _serverSession.value
         if (session != null) {
             try {
-                session.write("\u0003")
+                // in the chroot this session only follows the bridge's log (the bridge runs detached)
+                if (!chrootBridgeMode) session.write("\u0003")
                 session.terminalSession.finishIfRunning()
                 session.close()
             } catch (_: Exception) {
@@ -298,6 +313,7 @@ object LocalServerManager {
         }
 
         _serverSession.value = null
+        chrootBridgeMode = false
         _status.value = LocalServerStatus.Stopped(exitCode = 0)
     }
 
@@ -376,10 +392,22 @@ object LocalServerManager {
         }
 
         val appContext = context.applicationContext
+        if (ChrootManager.isActive(appContext)) {
+            startChrootServer(appContext, forceRestart, existingSession)
+            return
+        }
+
         ensureBridgeBinary(appContext)
         // the bridge starts Claude Code through the app's launcher (--claude-bin)
         LocalEnvironmentManager.ensureGlibcEnvironment(appContext)
         LocalEnvironmentManager.ensureClaudeWrapper(appContext)
+        // `rish` (Shizuku) in the terminal, and the local server's port/key it reads
+        com.example.gemini.data.adb.DeviceAccess.ensureTerminalCommands(appContext)
+        // after an app update the package hooks and the dpkg wrapper are refreshed here too, not only in a new terminal
+        TermuxRelocation.ensurePackageHooks(appContext)
+        // termux-* commands: AntiGem's dispatcher, and the termux-api package that provides the commands
+        LocalEnvironmentManager.ensureTermuxApiDispatcher(appContext)
+        LocalEnvironmentManager.ensureTermuxApiPackage(appContext)
 
         val command = resolveServerCommand(appContext)
         if (command == null) {
@@ -429,6 +457,129 @@ object LocalServerManager {
         }
     }
 
+    /** In the Ubuntu chroot the bridge runs detached; the server session only follows its log. */
+    @Volatile
+    private var chrootBridgeMode = false
+    private var chrootContext: Context? = null
+
+    /**
+     * The Ubuntu chroot: mounts it, puts this app's Linux bridge into it and starts the bridge there detached, so the
+     * exit setting can keep it working while AntiGem is closed. A bridge still running from before (closed with
+     * "Keep running") is kept when it is this app's bridge, so agents at work are not interrupted.
+     * The Server Runner terminal follows the bridge's log.
+     */
+    private suspend fun startChrootServer(context: Context, forceRestart: Boolean, existingSession: LocalPtySession?) {
+        _status.value = LocalServerStatus.Starting
+        chrootContext = context
+        val start = ChrootManager.start(context, withBridge = true)
+        if (!start.ok) {
+            Log.e(TAG, "[ServerManager] Ubuntu chroot start failed: ${start.message}")
+            _status.value = LocalServerStatus.Error("Ubuntu chroot: ${start.message}")
+            return
+        }
+        // `rish` and `android-su` in the chroot (and the port/key they read), off the start path
+        managerScope.launch { runCatching { com.example.gemini.data.adb.DeviceAccess.ensureChrootCommands(context) } }
+        // the chroot's own ports (an install from before they existed still had the Termux defaults; set ones stay)
+        AuthPreferences(context).applyLocalRuntimeUrls(chroot = true)
+        val healthUrl = AuthPreferences.currentBridgeHttpUrl.trimEnd('/') + "/api/health"
+        val command = resolveServerCommand(context)
+        if (command == null) {
+            _status.value = LocalServerStatus.Error("No bridge command")
+            return
+        }
+        // the running bridge is kept only when it is this app's binary started with the same command (token, ports,
+        // agents): a changed setting must reach the bridge
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val reuse = !forceRestart && !start.bridgeUpdated && start.bridgePid != null &&
+            prefs.getString(KEY_CHROOT_BRIDGE_COMMAND, null) == command && bridgeHealthy(healthUrl)
+        if (!reuse) {
+            if (start.bridgePid != null) {
+                // let it stop its agents cleanly; bridge-start ends whatever is left
+                requestBridgeShutdown()
+                withTimeoutOrNull(5_000L) { while (bridgeStillUp(healthUrl)) delay(250) }
+            }
+            val r = ChrootManager.startBridge(context, command)
+            if (!r.ok) {
+                Log.e(TAG, "[ServerManager] Ubuntu chroot bridge start failed: ${r.message()}")
+                _status.value = LocalServerStatus.Error("Ubuntu chroot bridge: ${r.message()}")
+                return
+            }
+            prefs.edit().putString(KEY_CHROOT_BRIDGE_COMMAND, command).apply()
+        } else {
+            Log.d(TAG, "[ServerManager] Reusing the bridge already running in the Ubuntu chroot (pid ${start.bridgePid})")
+        }
+        chrootBridgeMode = true
+        existingSession?.let { runCatching { it.close() } }
+        val session = withContext(Dispatchers.Main) {
+            LocalPtySession(
+                id = "server-runner-pty",
+                initialTitle = "Server Runner",
+                context = context,
+                isSsh = false,
+                initialCols = 80,
+                initialRows = 24,
+                rawShellArgs = ChrootManager.bridgeLogArgs(context)
+            )
+        }
+        _serverSession.value = session
+        _status.value = LocalServerStatus.Running()
+        // the status follows the bridge (closing the log view does not stop it)
+        exitObserverJob?.cancel()
+        exitObserverJob = managerScope.launch {
+            delay(15_000L)
+            var misses = 0
+            while (isActive && chrootBridgeMode) {
+                misses = if (bridgeStillUp(healthUrl)) 0 else misses + 1
+                if (misses >= 3) {
+                    _status.value = LocalServerStatus.Stopped(exitCode = null)
+                    break
+                }
+                delay(10_000L)
+            }
+        }
+    }
+
+    /**
+     * The Ubuntu chroot was stopped on its page (its bridge went with it): the server shows stopped at once, without
+     * the shutdown request and waits of a normal stop.
+     */
+    fun onChrootStopped() {
+        if (!chrootBridgeMode) return
+        exitObserverJob?.cancel()
+        exitObserverJob = null
+        AgyBridgeService.instance.notifyLocalStopped()
+        _status.value = LocalServerStatus.Stopped(exitCode = 0)
+    }
+
+    private suspend fun stopChrootServer() {
+        exitObserverJob?.cancel()
+        exitObserverJob = null
+        val healthUrl = AuthPreferences.currentBridgeHttpUrl.trimEnd('/') + "/api/health"
+        requestBridgeShutdown()
+        withTimeoutOrNull(5_000L) { while (bridgeStillUp(healthUrl)) delay(250) }
+        chrootContext?.let { ChrootManager.stopBridge(it) }
+        AgyBridgeService.instance.notifyLocalStopped()
+        // the log session stays, so its last lines remain readable
+        _status.value = LocalServerStatus.Stopped(exitCode = 0)
+    }
+
+    private suspend fun requestBridgeShutdown() = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url(AuthPreferences.currentBridgeHttpUrl.trimEnd('/') + "/api/shutdown")
+                .post("{}".toRequestBody(null))
+                .build()
+            AgyBridgeService.instance.fastClient.newCall(req).execute().close()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun bridgeHealthy(healthUrl: String): Boolean = try {
+        AgyBridgeService.instance.fastClient.newCall(Request.Builder().url(healthUrl).get().build()).execute().use { it.isSuccessful }
+    } catch (_: Exception) {
+        false
+    }
+
     /**
      * A restart starts the bridge in a new terminal session instead of typing the command into the old one. The old
      * session can still be running the bridge while it stops (it drops the app's connection first, then stops the
@@ -472,6 +623,10 @@ object LocalServerManager {
 
     private suspend fun stopServerInternal() {
         _status.value = LocalServerStatus.Stopping
+        if (chrootBridgeMode) {
+            stopChrootServer()
+            return
+        }
 
         val bridgeUrl = AuthPreferences.currentBridgeHttpUrl
         val session = _serverSession.value
