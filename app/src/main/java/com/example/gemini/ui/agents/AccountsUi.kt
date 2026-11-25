@@ -206,6 +206,8 @@ fun AccountsDialog(
     agyAuth: AgyHubClient.AgyAuthInfo,
     claudeStatus: ClaudeCliStatus?,
     onAgySignOut: () -> Unit,
+    /** Starts a fresh Antigravity sign-in through the bridge, even while the hub is stuck. */
+    onAgySignIn: () -> Unit = {},
     onAgyCancelSignIn: () -> Unit,
     onAgySettings: () -> Unit = {},
     onClaudeSignOut: () -> Unit,
@@ -257,22 +259,17 @@ fun AccountsDialog(
                             agyVersion?.let { "CLI $it" }
                         ) else listOfNotNull(agyVersion?.let { "CLI $it" })
                     ) {
-                        when {
-                            entry.isReady -> {
-                                SectionButton(L.common.signOut, Icons.AutoMirrored.Outlined.Logout, danger = true) {
-                                    confirmSignOut = AgentKind.AGY
-                                }
-                            }
-                            entry.pending && entry.action != null -> {
-                                entry.action.let { SectionButton(it.label, primary = AgentKind.AGY.accent()) { it.onClick() } }
-                                SectionButton(L.common.cancel) { onAgyCancelSignIn() }
-                            }
-                            else -> entry.action?.let {
-                                SectionButton(it.label, primary = AgentKind.AGY.accent()) {
-                                    it.onClick()
-                                    onDismiss()
-                                }
-                            }
+                        // Sign in and Sign out are always here: while the hub is stuck connecting, the entry is
+                        // neither ready nor carrying a sign-in action, so without these there is no way back in.
+                        SectionButton(L.common.signIn, Icons.AutoMirrored.Outlined.Login, primary = AgentKind.AGY.accent()) {
+                            onAgySignIn()
+                            onDismiss()
+                        }
+                        SectionButton(L.common.signOut, Icons.AutoMirrored.Outlined.Logout, danger = true) {
+                            confirmSignOut = AgentKind.AGY
+                        }
+                        if (entry.pending && entry.action != null) {
+                            SectionButton(L.common.cancel) { onAgyCancelSignIn() }
                         }
                         SectionButton(L.common.settings, Icons.Outlined.Settings) {
                             onAgySettings()
