@@ -1,15 +1,9 @@
 package com.example.gemini
 
 import android.app.Application
-import android.content.pm.PackageManager
-import android.content.pm.Signature
-import android.os.Build
-import android.widget.Toast
 import com.example.gemini.data.adb.AdbConnectManager
 import com.example.gemini.data.updater.PluginUpdateCheckWorker
 import com.example.gemini.data.updater.UpdateCheckWorker
-import com.telemetrydeck.sdk.TelemetryDeck
-import java.security.MessageDigest
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 class AntiGemApplication : Application(), coil.ImageLoaderFactory {
@@ -37,10 +31,16 @@ class AntiGemApplication : Application(), coil.ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        // a crash opens the crash screen (with the report) instead of the app just vanishing
+        com.example.gemini.crash.CrashHandler.install(this)
+        // the crash screen's own process needs none of the startup below
+        if (com.example.gemini.crash.CrashHandler.isCrashProcess(this)) return
         // loads the saved server addresses, Remote mode and the SSH key into memory before anything connects
         com.example.gemini.data.preferences.AuthPreferences(this)
         // the chosen light / dark themes and the custom ones, before the first screen draws
         com.example.gemini.theme.ThemeManager.init(this)
+        // the app language (Settings → Language), from its cache, before the first screen draws
+        com.example.gemini.i18n.LanguageManager.init(this)
         UpdateCheckWorker.schedule(this)
         PluginUpdateCheckWorker.schedule(this)
         // mini app reminders and exact-time tasks: alarms again (Android may have dropped them), off the main thread
@@ -48,49 +48,15 @@ class AntiGemApplication : Application(), coil.ImageLoaderFactory {
         Thread { com.example.gemini.ui.miniapps.MiniAppShortcuts.migrate(this) }.start()
         // Reconnects adb when Wireless debugging turns back on (it gets a new port every time)
         AdbConnectManager.init(this)
+        // ADB / Shizuku / root: which one Android Automation uses, and Shizuku's binder listeners
+        com.example.gemini.data.adb.DeviceAccess.init(this)
+        // the rooted Ubuntu chroot runtime: its installs and which one is in use (no root call here)
+        com.example.gemini.data.local.chroot.ChrootManager.init(this)
         com.example.gemini.data.ssh.SshSessionFactory.init(this)
         // Connect to PC: the paired PCs and the one in use (AuthPreferences reads the latter on its own too)
         com.example.gemini.data.pc.PcConnect.init(this)
         // the cloud project new Antigravity chats start in (Remote Agents), before the first chat is created
         com.example.gemini.data.agent.agy.AgyCloud.init(this)
-        // Forks build with their own key, so only official release APKs report real usage.
-        if (!BuildConfig.DEBUG && !isOfficialRelease()) {
-            Toast.makeText(
-                this,
-                "Unofficial build: analytics disabled. Developer: set your own TelemetryDeck app ID and RELEASE_CERT_SHA256 in AntiGemApplication.kt.",
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-        TelemetryDeck.start(
-            this,
-            TelemetryDeck.Builder()
-                .appID("D98008E6-EEE4-4BBC-97A2-E3790251AECF")
-                .namespace("com.santoshkurmi")
-                .defaultUser(SimpleTelemetryId.getUniqueUserId(this))
-                .testMode(BuildConfig.DEBUG)
-                .showDebugLogs(BuildConfig.DEBUG)
-                .sendNewSessionBeganSignal(true)
-        )
-
     }
 
-    private fun isOfficialRelease(): Boolean = runCatching {
-        val signatures: Array<Signature>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            val info = packageManager.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo ?: return false
-            if (info.hasMultipleSigners()) info.apkContentsSigners else info.signingCertificateHistory
-        } else {
-            @Suppress("DEPRECATION")
-            packageManager.getPackageInfo(packageName, PackageManager.GET_SIGNATURES).signatures
-        }
-        signatures.orEmpty().any { sig ->
-            MessageDigest.getInstance("SHA-256").digest(sig.toByteArray())
-                .joinToString("") { "%02X".format(it) } == RELEASE_CERT_SHA256
-        }
-    }.getOrDefault(false)
-
-    private companion object {
-        // SHA-256 of the release.jks certificate (alias "antigem"). Public, safe to commit.
-        const val RELEASE_CERT_SHA256 = "CCF2C681063BA941641519E4EAC7F024E92880CCD06EED5070DAA9717380F315"
-    }
 }
