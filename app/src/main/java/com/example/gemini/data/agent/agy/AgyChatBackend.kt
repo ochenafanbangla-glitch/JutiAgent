@@ -9,7 +9,11 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.gemini.data.preferences.AuthPreferences
+import com.example.gemini.data.remote.AgyAccounts
 import com.example.gemini.data.remote.AgyHubClient
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import com.example.gemini.domain.model.AiModel
 import com.example.gemini.domain.model.ChatMessage
 import com.example.gemini.domain.model.ChatAttachment
@@ -462,6 +466,59 @@ class AgyChatBackend(
                 _authFeedbackMessage.tryEmit("Logout error: ${e.message}")
             } finally {
                 _isAuthBusy.value = false
+            }
+        }
+    }
+
+    /**
+     * Starts the Antigravity Google sign-in through the bridge (POST /api/auth/start-login), even while the hub is
+     * stuck without a CSRF token: the bridge asks the hub for a login URL and the app opens it as soon as it
+     * arrives ([pendingLoginUrl]). The hub's own Login RPC goes through the app's CSRF-waiting HTTP client, so it
+     * cannot start while the token is missing; the bridge call has no such wait.
+     */
+    fun startAgyLoginViaBridge() {
+        if (_isAuthBusy.value) return
+        if (!isNetworkConnected()) {
+            _authFeedbackMessage.tryEmit("Cannot sign in: no internet connection.")
+            return
+        }
+        _isAuthBusy.value = true
+        agyBridgeService.updateAuthChecking(true)
+        _authFeedbackMessage.tryEmit("Initiating sign-in with Antigravity...")
+
+        // Poll for successful auth completion concurrently every 800ms (same as the hub login path)
+        startLoginPoll(AuthPreferences.currentHubUrl)
+
+        backendScope.launch {
+            try {
+                val url = "${AuthPreferences.currentBridgeHttpUrl.trimEnd('/')}/api/auth/start-login"
+                val req = Request.Builder().url(url)
+                    .post("{}".toRequestBody("application/json".toMediaType()))
+                    .build()
+                agyBridgeService.client.newCall(req).execute().use { r ->
+                    if (!r.isSuccessful) error("The bridge answered HTTP ${r.code}")
+                }
+            } catch (e: Exception) {
+                loginPollJob?.cancel()
+                _isAuthBusy.value = false
+                agyBridgeService.updateAuthChecking(false)
+                _authFeedbackMessage.tryEmit("Could not start sign-in: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Signs out of Antigravity through the bridge's account store (removes agy's live login file), without needing
+     * the hub: works while the hub is stuck, where [logoutFromAgyHub] cannot reach it. Saved account copies stay
+     * valid. [onDone] gets null on success. An unsaved live login is lost by signing out either way, so when the
+     * bridge refuses to drop it unsaved the sign-out is retried without saving, as the user already confirmed it.
+     */
+    fun signOutAgyViaBridge(onDone: (Throwable?) -> Unit = {}) {
+        AgyAccounts.clearForNewSignIn { err ->
+            if (err is AgyAccounts.NotSavedException) {
+                AgyAccounts.clearForNewSignIn(saveCurrent = false, force = true, onDone)
+            } else {
+                onDone(err)
             }
         }
     }
