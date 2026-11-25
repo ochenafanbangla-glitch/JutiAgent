@@ -33,7 +33,7 @@ if [[ "${ABI}" == "x86_64" ]]; then
     BRIDGE_ARCH="amd64"
 elif [[ "${CHROOT}" == "true" ]]; then
     SUFFIX="-chroot"
-    ARCHIVE="antiGem-chroot"
+    ARCHIVE="JutiAgent-termux-chroot"
     GRADLE_ARGS+=(-Pchroot=true)
 fi
 
