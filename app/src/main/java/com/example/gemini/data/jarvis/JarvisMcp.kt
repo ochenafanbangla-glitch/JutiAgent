@@ -3,9 +3,8 @@ package com.example.gemini.data.jarvis
 import android.content.Context
 import com.example.gemini.data.agent.ChatCompletionMonitor
 import com.example.gemini.data.daemon.IdeApiClient
-import com.example.gemini.data.daemon.FileNode
 import com.example.gemini.data.daemon.ProjectItem
-import com.example.gemini.data.daemon.TermuxDaemonManager
+import com.example.gemini.data.daemon.IdeDaemonManager
 import com.example.gemini.domain.model.AgentKind
 import com.example.gemini.domain.model.AiModel
 import com.example.gemini.domain.model.ChatMessage
@@ -659,7 +658,7 @@ object JarvisMcp {
         return json(JSONObject().apply {
             put("ide_bridge", if (sys.isBridgeOnline) "online" else "offline")
             put("antigravity_hub", if (sys.isHubOnline) "online" else "offline")
-            put("file_server", TermuxDaemonManager.status.value.name.lowercase())
+            put("file_server", IdeDaemonManager.status.value.name.lowercase())
             put("claude_code", JSONObject().apply {
                 if (claude == null) put("state", "unknown")
                 else {
@@ -680,7 +679,7 @@ object JarvisMcp {
         val q = args.optString("query").trim()
         if (q.isEmpty()) return error("query is empty")
         val dirArg = args.optString("project").trim()
-        val dir = if (dirArg.isEmpty()) TermuxDaemonManager.activeProject.value?.path
+        val dir = if (dirArg.isEmpty()) IdeDaemonManager.activeProject.value?.path
         else (findProject(dirArg) ?: return error("No project matches \"$dirArg\".")).path
         if (dir == null) return error("No project is open. Use jarvis_ide_open_project first.")
         val hits = IdeApiClient.searchCode(q, dir)
@@ -973,14 +972,14 @@ object JarvisMcp {
 
     private fun getState(): JSONObject {
         val conv = vm.currentConversation.value
-        val tabs = TermuxDaemonManager.openTabs.value
-        val active = TermuxDaemonManager.activeProject.value
+        val tabs = IdeDaemonManager.openTabs.value
+        val active = IdeDaemonManager.activeProject.value
         val pending = JarvisController.allPending()
         return json(JSONObject().apply {
             put("screen", JarvisController.screen.value)
             put("ide", JSONObject().apply {
                 put("project", active?.let { JSONObject().put("name", it.name).put("path", it.path) } ?: JSONObject.NULL)
-                put("active_file", TermuxDaemonManager.activeTabPath.value ?: JSONObject.NULL)
+                put("active_file", IdeDaemonManager.activeTabPath.value ?: JSONObject.NULL)
                 put("open_files", JSONArray().apply { tabs.forEach { put(it.name + if (it.isModified) " (unsaved)" else "") } })
             })
             put("chat_on_screen", conv?.let {
@@ -1060,7 +1059,7 @@ object JarvisMcp {
             "jarvis" -> out.put("jarvis", JSONObject().apply { settings.filter { it.own || it.readOnly }.forEach { put(it.key, it.get() ?: JSONObject.NULL) } })
             "appearance" -> out.put("appearance", JSONObject().apply { settings.filter { !it.own && !it.readOnly }.forEach { put(it.key, it.get() ?: JSONObject.NULL) } })
             "projects" -> out.put("projects", JSONObject().apply {
-                put("active", TermuxDaemonManager.activeProject.value?.name ?: JSONObject.NULL)
+                put("active", IdeDaemonManager.activeProject.value?.name ?: JSONObject.NULL)
                 put("list", JSONArray(projects().take(15).map { it.name }))
             })
             else -> {
@@ -1080,7 +1079,7 @@ object JarvisMcp {
     private fun openSettings(args: JSONObject): JSONObject {
         val want = args.optString("section").trim().lowercase().replace(' ', '_')
         val all = com.example.gemini.ui.settings.SettingsSection.values()
-            .filter { it != com.example.gemini.ui.settings.SettingsSection.CLAUDE_PAGE }
+            .filter { it != com.example.gemini.ui.settings.SettingsSection.CLAUDE_PAGE && it != com.example.gemini.ui.settings.SettingsSection.TERMUX_ONLY }
         val s = all.firstOrNull { it.name.lowercase() == want }
             ?: all.firstOrNull { it.title.lowercase().contains(want.replace('_', ' ')) }
             ?: all.firstOrNull { it.name.lowercase().contains(want) || want.contains(it.name.lowercase()) }
@@ -1278,7 +1277,7 @@ object JarvisMcp {
         val project = if (projectArg.isBlank()) null else findProject(projectArg) ?: return error("No project matches \"$projectArg\". Use jarvis_ide_list_projects.")
         val model = args.optString("model").trim().takeIf { it.isNotEmpty() }?.let { findModel(it, modelsFor(agent))?.id ?: return error("No $agent model matches \"$it\".") }
         val effort = effortArg(args, agent, model).getOrElse { return error(it.message ?: "Unknown effort") }
-        if (project != null) { TermuxDaemonManager.setActiveProject(project); vm.onProjectChanged(project.path) }
+        if (project != null) { IdeDaemonManager.setActiveProject(project); vm.onProjectChanged(project.path) }
         vm.startNewChat(agent)
         model?.let { vm.selectModel(it) }
         effort?.let { level ->
@@ -1437,10 +1436,21 @@ object JarvisMcp {
                     com.example.gemini.theme.ThemeManager.find(v)?.let { com.example.gemini.theme.ThemeManager.select(it); null }
                         ?: "No theme \"$v\". Themes: ${com.example.gemini.theme.ThemeManager.all().joinToString { "${it.name} (${it.id})" }}"
                 }),
+            Setting("app_language", "The app's language by id or name (en = English). Translating: the language_mcp tools.",
+                "en|or a language's id or name", false,
+                get = { com.example.gemini.i18n.LanguageManager.load(com.example.gemini.i18n.LanguageManager.currentId)?.let { "${it.id} (${it.name})" } },
+                set = { v ->
+                    val lang = com.example.gemini.i18n.LanguageManager.find(v)
+                    if (lang != null && com.example.gemini.i18n.LanguageManager.apply(lang.id)) null
+                    else "No language \"$v\". Languages: " + com.example.gemini.i18n.LanguageManager.refreshList().joinToString { "${it.name} (${it.id})" }
+                }),
             Setting("chat_font_scale", "Chat text size", "0.8-1.6", false, get = { vm.chatFontScale.first() }, set = { v ->
                 v.trim().removeSuffix("x").toFloatOrNull()?.let { vm.setChatFontScale(it.coerceIn(0.8f, 1.6f)); null } ?: "Not a number."
             }),
             bool("group_chats_by_workspace", "Group the chat list by project", false, { vm.groupChatsByWorkspace.value }, { vm.setGroupChatsByWorkspace(it) }),
+            bool("group_agent_steps", "Fold runs of agent thinking and tool calls into one progress pill (off: every step is its own tile)", false, { vm.groupAgentSteps.value }, { vm.setGroupAgentSteps(it) }),
+            int("group_steps_min", "With group_agent_steps on: fold a run of agent thinking and tool calls once it has at least this many steps (1 = every run)", false, 1..10, { vm.groupStepsMin.value }, { vm.setGroupStepsMin(it) }),
+            bool("show_message_stats", "Token, cache and time stats under each reply", false, { vm.showMessageStats.value }, { vm.setShowMessageStats(it) }),
             bool("floating_bubble", "Floating chat bubble over other apps", false, { vm.isFloatingBubbleEnabled.value }, { vm.setFloatingBubbleEnabled(it) }),
             bool("vibrate_when_chat_done", "A light buzz when a chat finishes", false, { ChatCompletionMonitor.vibrate.value }, { ChatCompletionMonitor.setVibrate(it) }),
             Setting("new_chat_agent", "Agent of new chats", "claude|agy|opencode|codex", false, get = { vm.newChatAgent.value.name.lowercase() }, set = { v ->
@@ -1565,8 +1575,6 @@ object JarvisMcp {
 
     /** Null when GitHub works here; otherwise why not, and what the user should do. */
     private suspend fun githubProblem(context: Context): String? {
-        if (!com.example.gemini.data.local.LocalEnvironmentManager.isTermuxPackage(context))
-            return "GitHub sign-in is only in the Termux build of JutiAgent."
         val s = com.example.gemini.data.github.GitHubManager.statusNow(context)
         val where = if (com.example.gemini.data.github.GitHubManager.remote) "on the server" else "in the terminal"
         return when {
@@ -1579,7 +1587,6 @@ object JarvisMcp {
     }
 
     private suspend fun githubStatus(context: Context): JSONObject {
-        if (!com.example.gemini.data.local.LocalEnvironmentManager.isTermuxPackage(context)) return error("GitHub sign-in is only in the Termux build of JutiAgent.")
         val gh = com.example.gemini.data.github.GitHubManager
         val s = gh.statusNow(context)
         return json(JSONObject().apply {
@@ -1660,9 +1667,9 @@ object JarvisMcp {
         val name = java.io.File(path).name
         if (args.optBoolean("open", true)) {
             val p = ProjectItem(name, path)
-            TermuxDaemonManager.setActiveProject(p)
+            IdeDaemonManager.setActiveProject(p)
             vm.onProjectChanged(path)
-            runCatching { TermuxDaemonManager.loadProjects(vm.allConversations.value) }
+            runCatching { IdeDaemonManager.loadProjects(vm.allConversations.value) }
             if (args.optBoolean("show_ide", false)) vm.requestViewMode("IDE")
         }
         return text("Cloned ${repo?.fullName ?: url} into $path" + (if (args.optBoolean("open", true)) " and made it the active project." else "."))
@@ -1676,7 +1683,7 @@ object JarvisMcp {
         val projectArg = args.optString("project").trim()
         val dir = when {
             projectArg.isEmpty() -> null
-            projectArg.equals("active", true) -> TermuxDaemonManager.activeProject.value?.path ?: return error("No project is active.")
+            projectArg.equals("active", true) -> IdeDaemonManager.activeProject.value?.path ?: return error("No project is active.")
             else -> (findProject(projectArg) ?: return error("No project matches \"$projectArg\". Use jarvis_ide_list_projects.")).path
         }
         val remote = args.optString("remote").trim().ifEmpty { "origin" }
@@ -1695,9 +1702,9 @@ object JarvisMcp {
     // ---------------- IDE
 
     private suspend fun projects(): List<ProjectItem> {
-        val cached = TermuxDaemonManager.projects.value
+        val cached = IdeDaemonManager.projects.value
         if (cached.isNotEmpty()) return cached
-        return runCatching { TermuxDaemonManager.loadProjects(vm.allConversations.value) }.getOrDefault(emptyList())
+        return runCatching { IdeDaemonManager.loadProjects(vm.allConversations.value) }.getOrDefault(emptyList())
     }
 
     private suspend fun findProject(text: String): ProjectItem? {
@@ -1712,7 +1719,7 @@ object JarvisMcp {
 
     private suspend fun ideListProjects(args: JSONObject): JSONObject {
         val q = args.optString("query").lowercase()
-        val active = TermuxDaemonManager.activeProject.value?.path
+        val active = IdeDaemonManager.activeProject.value?.path
         val list = projects().filter { q.isEmpty() || it.name.lowercase().contains(q) || it.path.lowercase().contains(q) }
         return json(pagedJson("projects", list.map { JSONObject().put("name", it.name).put("path", it.path).put("active", it.path == active) }, args))
     }
@@ -1721,32 +1728,23 @@ object JarvisMcp {
         val wanted = args.optString("project").trim()
         if (wanted.isEmpty()) return error("project is required")
         val p = findProject(wanted) ?: return error("No project matches \"$wanted\". Use jarvis_ide_list_projects.")
-        TermuxDaemonManager.setActiveProject(p)
+        IdeDaemonManager.setActiveProject(p)
         vm.onProjectChanged(p.path)
         if (args.optBoolean("show_ide", true)) vm.requestViewMode("IDE")
         return text("Opened project ${p.name}.")
     }
 
-    private fun flatten(nodes: List<FileNode>, out: MutableList<FileNode>, cap: Int = 6000) {
-        for (n in nodes) {
-            if (out.size >= cap) return
-            if (n.isDir) flatten(n.children, out, cap) else out.add(n)
-        }
-    }
-
     private suspend fun resolveFile(file: String): Pair<String, String>? {
-        val project = TermuxDaemonManager.activeProject.value
+        val project = IdeDaemonManager.activeProject.value
         val f = file.trim()
         if (f.startsWith("/") || f.startsWith("~")) return f to f.substringAfterLast('/')
         if (project != null && f.contains('/')) {
             val p = project.path.trimEnd('/') + "/" + f.removePrefix("./")
-            if (IdeApiClient.readFileDetailed(p) != null) return p to f.substringAfterLast('/')
+            if (com.example.gemini.data.files.FileExplorerApi.stat(p).isSuccess) return p to f.substringAfterLast('/')
         }
-        // just a name: look through the project's files
+        // just a name: search the project's files by name on the bridge (no full file tree download)
         val root = project?.path ?: return null
-        val tree = IdeApiClient.getFileTree(root)
-        val files = ArrayList<FileNode>()
-        flatten(tree, files)
+        val files = com.example.gemini.data.files.FileExplorerApi.searchFileNames(root, f.substringAfterLast('/'), limit = 200)
         val lower = f.lowercase()
         val hit = files.firstOrNull { it.name.equals(f, true) }
             ?: files.firstOrNull { it.path.lowercase().endsWith("/$lower") }
@@ -1760,30 +1758,32 @@ object JarvisMcp {
         if (file.isEmpty()) return error("file is required")
         args.optString("project").trim().takeIf { it.isNotEmpty() }?.let { pn ->
             val p = findProject(pn) ?: return error("No project matches \"$pn\".")
-            if (TermuxDaemonManager.activeProject.value?.path != p.path) { TermuxDaemonManager.setActiveProject(p); vm.onProjectChanged(p.path) }
+            if (IdeDaemonManager.activeProject.value?.path != p.path) { IdeDaemonManager.setActiveProject(p); vm.onProjectChanged(p.path) }
         }
         val (path, name) = resolveFile(file) ?: return error("Could not find \"$file\" in the active project. Open the right project first.")
-        val res = IdeApiClient.readFileDetailed(path) ?: return error("Could not read $path.")
-        if (res.category == "binary") return error("$name is a binary file and cannot be opened in the editor.")
-        TermuxDaemonManager.openOrSelectTab(path, name, res.content)
+        when (val r = com.example.gemini.data.files.IdeFileLauncher.open(path, name, -1)) {
+            is com.example.gemini.data.files.IdeFileLauncher.Outcome.Opened -> Unit
+            is com.example.gemini.data.files.IdeFileLauncher.Outcome.NeedsConfirm -> return error("$name is a binary file and cannot be opened in the editor.")
+            is com.example.gemini.data.files.IdeFileLauncher.Outcome.Failed -> return error(r.message)
+        }
         if (args.optBoolean("show_ide", true)) vm.requestViewMode("IDE")
         return text("Opened $name.")
     }
 
     private fun ideCloseFile(args: JSONObject): JSONObject {
-        val tabs = TermuxDaemonManager.openTabs.value
+        val tabs = IdeDaemonManager.openTabs.value
         val want = args.optString("file").trim()
-        val tab = if (want.isEmpty()) tabs.firstOrNull { it.path == TermuxDaemonManager.activeTabPath.value }
+        val tab = if (want.isEmpty()) tabs.firstOrNull { it.path == IdeDaemonManager.activeTabPath.value }
         else tabs.firstOrNull { it.path == want || it.name.equals(want, true) || it.path.endsWith("/$want") }
         tab ?: return error("No such open file.")
         if (tab.isModified && !args.optBoolean("discard")) return error("${tab.name} has unsaved changes. Ask the user, then pass discard=true.")
-        TermuxDaemonManager.closeTab(tab.path)
+        IdeDaemonManager.closeTab(tab.path)
         return text("Closed ${tab.name}.")
     }
 
     private fun openFilesJson() = JSONObject().apply {
-        val tabs = TermuxDaemonManager.openTabs.value
-        put("active", TermuxDaemonManager.activeTabPath.value ?: JSONObject.NULL)
+        val tabs = IdeDaemonManager.openTabs.value
+        put("active", IdeDaemonManager.activeTabPath.value ?: JSONObject.NULL)
         put("files", JSONArray().apply {
             tabs.forEach { put(JSONObject().put("name", it.name).put("path", it.path).put("unsaved", it.isModified)) }
         })
