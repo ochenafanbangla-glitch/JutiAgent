@@ -5,7 +5,12 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.ContentObserver
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
@@ -20,6 +25,8 @@ import androidx.core.content.ContextCompat
 import com.example.gemini.R
 import com.example.gemini.data.local.LocalCommandResult
 import com.example.gemini.data.local.LocalEnvironmentManager
+import com.example.gemini.data.local.chroot.ChrootInstall
+import com.example.gemini.data.local.chroot.ChrootSetup
 import com.example.gemini.data.preferences.AuthPreferences
 import com.example.gemini.data.remote.AdbTunnel
 import com.example.gemini.data.remote.RemoteServerManager
@@ -45,6 +52,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetAddress
 import java.net.NetworkInterface
 import kotlin.coroutines.resume
+import com.example.gemini.i18n.L
 
 /**
  * Connects the terminal's adb to this device over Wireless debugging, the way Shizuku does:
@@ -91,7 +99,12 @@ object AdbConnectManager {
         val pairing: Pairing = Pairing.Idle,
         val host: String = DEFAULT_HOST,
         val autoReconnect: Boolean = true,
-        val pairedOnce: Boolean = false
+        val pairedOnce: Boolean = false,
+        /** Turn Wireless debugging back on by itself (after a reboot or Wi-Fi drop); needs [secureSettings]. */
+        val autoWireless: Boolean = false,
+        /** JutiAgent holds WRITE_SECURE_SETTINGS (granted once through adb, Shizuku or root). */
+        val secureSettings: Boolean = false,
+        val grantingSecureSettings: Boolean = false
     ) {
         val connectedDevice: Device? get() = devices.firstOrNull { it.state == "device" }
     }
@@ -115,7 +128,9 @@ object AdbConnectManager {
             it.copy(
                 host = prefs.getString("host", DEFAULT_HOST) ?: DEFAULT_HOST,
                 autoReconnect = prefs.getBoolean("auto_reconnect", true),
-                pairedOnce = prefs.getBoolean("paired_once", false)
+                pairedOnce = prefs.getBoolean("paired_once", false),
+                autoWireless = prefs.getBoolean("auto_wireless", false),
+                secureSettings = hasSecureSettings()
             )
         }
         // adbd picks a new port each time Wireless debugging turns on (also after Wi-Fi drops)
@@ -129,7 +144,18 @@ object AdbConnectManager {
                 }
             )
         }.onFailure { Log.w(TAG, "Cannot watch Wireless debugging: ${it.message}") }
-        if (isWirelessDebuggingOn(appContext)) maybeAutoConnect()
+        // Wireless debugging goes off when Wi-Fi drops: turn it back on when Wi-Fi is back (if the user wants that)
+        runCatching {
+            appContext.getSystemService(ConnectivityManager::class.java).registerNetworkCallback(
+                NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(),
+                object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        scope.launch { delay(3000); maybeTurnOnWireless() }
+                    }
+                }
+            )
+        }.onFailure { Log.w(TAG, "Cannot watch Wi-Fi: ${it.message}") }
+        if (isWirelessDebuggingOn(appContext)) maybeAutoConnect() else scope.launch { delay(2000); maybeTurnOnWireless() }
     }
 
     /** Ports of this phone's Wireless debugging "connect" service (changes every time Wireless debugging turns on). */
@@ -174,6 +200,82 @@ object AdbConnectManager {
 
     fun clearMessage() = _state.update { it.copy(message = null, isError = false) }
 
+    // ---------------- Wireless debugging on by itself ----------------
+
+    private const val WRITE_SECURE_SETTINGS = "android.permission.WRITE_SECURE_SETTINGS"
+
+    fun hasSecureSettings(): Boolean =
+        appContext.checkSelfPermission(WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Turns "Wireless debugging on by itself" on or off. Turning it on needs WRITE_SECURE_SETTINGS (only the shell user
+     * can grant it): granted here through whatever is ready, the adb connection, Shizuku or root.
+     */
+    fun setAutoWireless(enabled: Boolean) = scope.launch {
+        if (!enabled) {
+            prefs.edit().putBoolean("auto_wireless", false).apply()
+            _state.update { it.copy(autoWireless = false) }
+            return@launch
+        }
+        if (!hasSecureSettings()) {
+            _state.update { it.copy(grantingSecureSettings = true) }
+            val error = try { grantSecureSettings() } finally { _state.update { it.copy(grantingSecureSettings = false) } }
+            if (error != null) {
+                report(error, true)
+                return@launch
+            }
+        }
+        prefs.edit().putBoolean("auto_wireless", true).apply()
+        _state.update { it.copy(autoWireless = true, secureSettings = true) }
+        report(L.adb.connectManager.wirelessDebuggingWillBeTurnedBack)
+        maybeTurnOnWireless()
+    }
+
+    /** `pm grant` of WRITE_SECURE_SETTINGS to JutiAgent through adb, Shizuku or root; null when it worked, else why not. */
+    private suspend fun grantSecureSettings(): String? {
+        val command = "pm grant ${appContext.packageName} $WRITE_SECURE_SETTINGS"
+        val device = refreshNow().let { _state.value.connectedDevice }
+        val tried = mutableListOf<String>()
+        if (device != null) {
+            tried += "adb: " + deviceShell(device, command, 20).output.trim().ifBlank { L.adb.connectManager.noOutput }
+        }
+        if (!hasSecureSettings() && ShizukuShell.status.value.ready) {
+            tried += L.adb.connectManager.shizukuValue(DeviceAccess.shell(command, 20, DeviceAccess.Mode.SHIZUKU).output.trim().ifBlank { L.adb.connectManager.noOutput })
+        }
+        if (!hasSecureSettings() && RootShell.state.value.check == RootShell.Check.GRANTED) {
+            tried += "root: " + DeviceAccess.shell(command, 20, DeviceAccess.Mode.ROOT).output.trim().ifBlank { L.adb.connectManager.noOutput }
+        }
+        if (hasSecureSettings()) return null
+        return if (tried.isEmpty()) L.adb.connectManager.connectAdbFirstOrSetUp
+        else L.adb.connectManager.couldntGrantThePermissionValue(tried.joinToString("; "))
+    }
+
+    private fun onWifi(): Boolean = runCatching {
+        val cm = appContext.getSystemService(ConnectivityManager::class.java)
+        @Suppress("DEPRECATION")
+        cm.allNetworks.any { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
+    }.getOrDefault(false)
+
+    /**
+     * Switches Wireless debugging on when the user asked for that, JutiAgent may (WRITE_SECURE_SETTINGS), the phone is on
+     * Wi-Fi and Developer options are on. True when it is on now. On a Wi-Fi network not allowed before, Android asks
+     * the user first and leaves it off until they allow it.
+     */
+    private fun maybeTurnOnWireless(): Boolean {
+        if (!::appContext.isInitialized || !isWirelessDebuggingSupported()) return false
+        if (isWirelessDebuggingOn(appContext)) return true
+        val s = _state.value
+        if (!s.autoWireless || !isDeveloperOptionsOn(appContext) || !onWifi()) return false
+        if (!hasSecureSettings()) {
+            _state.update { it.copy(secureSettings = false) }
+            return false
+        }
+        return runCatching { Settings.Global.putInt(appContext.contentResolver, ADB_WIFI_ENABLED, 1) }
+            .onSuccess { Log.d(TAG, "Turned Wireless debugging on") }
+            .onFailure { Log.w(TAG, "Turning Wireless debugging on failed: ${it.message}") }
+            .isSuccess
+    }
+
     private fun report(message: String, isError: Boolean = false) =
         _state.update { it.copy(message = message, isError = isError) }
 
@@ -182,8 +284,18 @@ object AdbConnectManager {
     /** In server mode adb means the SERVER's adb: everything here runs there, over the app's SSH connection. */
     private val remote get() = AuthPreferences.currentRemoteMode
 
+    /**
+     * When the Ubuntu chroot is this phone's runtime, adb means the chroot's adb (Ubuntu's adb and fastboot): the agents
+     * there use it, so it runs as the chroot's user and its pairing keys live in their ~/.android. Null otherwise.
+     */
+    private val chroot: ChrootInstall? get() = ChrootSetup.install()
+
+    /** Whether adb lives in the Ubuntu chroot (for the screen's wording). */
+    val inChroot: Boolean get() = chroot != null
+
     private suspend fun shell(command: String, timeoutSeconds: Long = 30, onLine: ((String) -> Unit)? = null): LocalCommandResult {
         if (remote) return serverShell(command, timeoutSeconds, onLine)
+        chroot?.let { return chrootShell(it, command, timeoutSeconds, onLine) }
         return LocalEnvironmentManager.executeCommand(
             "( $command ) < /dev/null", appContext, timeoutSeconds = timeoutSeconds,
             customEnv = mapOf("DEBIAN_FRONTEND" to "noninteractive"), onOutputLine = onLine
@@ -200,6 +312,14 @@ object AdbConnectManager {
         LocalCommandResult(code, out, System.currentTimeMillis() - started)
     }
 
+    private suspend fun chrootShell(install: ChrootInstall, command: String, timeoutSeconds: Long, onLine: ((String) -> Unit)?): LocalCommandResult {
+        val started = System.currentTimeMillis()
+        val r = ChrootSetup.asUser(appContext, install, "( $command ) < /dev/null 2>&1", timeoutMs = (timeoutSeconds + 15) * 1000, onLine = onLine)
+        // chrootctl's own errors (no root, chroot not there) come on stderr
+        val output = r.out.joinToString("\n").ifBlank { if (r.ok) "" else r.message() }
+        return LocalCommandResult(r.exitCode, output, System.currentTimeMillis() - started)
+    }
+
     // `timeout` keeps a stuck adb from blocking the output reader forever
     private suspend fun adb(args: String, seconds: Int = 20) = shell("timeout $seconds adb $args", seconds + 5L)
 
@@ -207,6 +327,27 @@ object AdbConnectManager {
     fun refresh(quiet: Boolean = false) = scope.launch {
         if (!quiet) _state.update { it.copy(refreshing = true) }
         try { refreshNow() } finally { _state.update { it.copy(refreshing = false) } }
+    }
+
+    /**
+     * Refreshes, then connects the way the Connect button does with no port (this phone, port found by itself) when
+     * adb was paired, nothing is connected and Wireless debugging is on. For opening the ADB page (also when switching
+     * back to ADB from Shizuku or Root) and its refresh button: auto-reconnect only reacts to the app starting and to
+     * Wireless debugging turning on, so a connection lost in between would otherwise stay lost. [quiet] hides "couldn't
+     * connect" messages.
+     */
+    fun refreshAndConnect(quiet: Boolean = true) = scope.launch {
+        _state.update { it.copy(refreshing = true) }
+        try { refreshNow() } finally { _state.update { it.copy(refreshing = false) } }
+        val s = _state.value
+        if (s.adbInstalled != true || s.connectedDevice != null || !s.pairedOnce || s.busy != null) return@launch
+        if (pairingJob?.isActive == true || autoConnectJob?.isActive == true || connectJob?.isActive == true) return@launch
+        if (!remote && !isWirelessDebuggingOn(appContext)) {
+            // when JutiAgent may turn it on, the Wireless debugging watcher connects as soon as it is on
+            if (!maybeTurnOnWireless() && !quiet) report(L.adb.connectManager.wirelessDebuggingIsOffTurnIt, true)
+            return@launch
+        }
+        connectJob = scope.launch { connectNow(null, quiet) }
     }
 
     private suspend fun refreshNow() {
@@ -237,17 +378,33 @@ object AdbConnectManager {
         installJob = scope.launch {
             _state.update { it.copy(installing = true, installLog = emptyList(), installError = null) }
             if (remote) {
-                appendInstallLog("Installing adb on the server…")
+                appendInstallLog(L.adb.connectManager.installingAdbOnTheServer)
                 val r = AdbTunnel.installServerAdb()
-                appendInstallLog(r.fold({ it }, { it.message ?: "Install failed" }))
+                appendInstallLog(r.fold({ it }, { it.message ?: L.adb.connectManager.installFailed }))
                 refreshNow()
                 _state.update { it.copy(installing = false, installError = r.exceptionOrNull()?.message) }
+                return@launch
+            }
+            chroot?.let { install ->
+                // Ubuntu's own adb and fastboot: they run as the user without sudo (the user is in Android's usb group)
+                appendInstallLog(L.adb.connectManager.installingAdbAndFastbootInThe)
+                val keep = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+                val command = "export DEBIAN_FRONTEND=noninteractive; dpkg --configure -a >/dev/null 2>&1; " +
+                    "apt-get update -q && apt-get install -y -q --no-install-recommends $keep adb fastboot"
+                appendInstallLog("$ apt-get install adb fastboot")
+                val r = ChrootSetup.asRoot(appContext, install, "( $command ) 2>&1", timeoutMs = 900_000L) { line -> if (line.isNotBlank()) appendInstallLog(line) }
+                refreshNow()
+                val ok = _state.value.adbInstalled == true
+                _state.update {
+                    it.copy(installing = false, installError = if (ok) null else L.adb.connectManager.installFailedExitExitcodeCheckThe(r.exitCode))
+                }
+                if (ok) appendInstallLog(L.adb.connectManager.versionAndFastboot(_state.value.adbVersion ?: L.adb.connectManager.adbInstalled))
                 return@launch
             }
             // Termux is rolling-release: installing only android-tools can leave older libraries (libprotobuf…) that the new
             // adb can't link against, so refresh the package lists and bring its direct dependencies up to date too
             val keepConfigs = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
-            val pkg = if (LocalEnvironmentManager.isTermuxPackage(appContext)) "android-tools" else "adb"
+            val pkg = "android-tools"
             val command = "apt-get update && apt-get install -y $keepConfigs $pkg && " +
                 "apt-get install -y $keepConfigs ${'$'}(apt-cache depends $pkg | awk '/Depends:/ && ${'$'}2 !~ /^</ {print ${'$'}2}')"
             appendInstallLog("$ $command")
@@ -255,9 +412,9 @@ object AdbConnectManager {
             refreshNow()
             val ok = _state.value.adbInstalled == true
             _state.update {
-                it.copy(installing = false, installError = if (ok) null else "Install failed (exit ${result.exitCode}). Check the log above, or run \"pkg upgrade\" in the terminal and try again.")
+                it.copy(installing = false, installError = if (ok) null else L.adb.connectManager.installFailedExitExitcodeCheckThe2(result.exitCode))
             }
-            if (ok) appendInstallLog("✓ ${_state.value.adbVersion ?: "adb installed"}")
+            if (ok) appendInstallLog("✓ ${_state.value.adbVersion ?: L.adb.connectManager.adbInstalled}")
         }
     }
 
@@ -277,22 +434,22 @@ object AdbConnectManager {
         connectJob?.cancel()
         autoConnectJob?.cancel()
         _state.update { it.copy(busy = null) }
-        report("Cancelled.")
+        report(L.adb.connectManager.cancelled)
     }
 
     /** Disconnects every device (in server mode: takes the phone away from the server's adb). */
     fun disconnectAll() = scope.launch {
         if (remote) AdbTunnel.disconnectServer(appContext) else adb("disconnect", 10)
         _state.update { it.copy(devices = listDevices()) }
-        report("Disconnected.")
+        report(L.adb.connectManager.disconnected)
     }
 
     private suspend fun connectNow(port: Int?, quiet: Boolean): Boolean {
         if (remote) {
             try {
-                _state.update { it.copy(busy = "Connecting the server's adb to this phone…") }
+                _state.update { it.copy(busy = L.adb.connectManager.connectingTheServersAdbToThis) }
                 val r = AdbTunnel.connectServer(appContext, port)
-                r.fold({ report(it) }, { if (!quiet) report(it.message ?: "Could not connect", true) })
+                r.fold({ report(it) }, { if (!quiet) report(it.message ?: L.adb.connectManager.couldNotConnect, true) })
                 _state.update { it.copy(devices = listDevices()) }
                 return r.isSuccess
             } finally {
@@ -302,19 +459,19 @@ object AdbConnectManager {
         val host = _state.value.host
         try {
             val target = port ?: run {
-                _state.update { it.copy(busy = "Looking for the Wireless debugging port…") }
+                _state.update { it.copy(busy = L.adb.connectManager.lookingForTheWirelessDebuggingPort) }
                 withTimeoutOrNull(25_000) { localServicePorts(CONNECT_SERVICE).first() }
             }
             if (target == null) {
-                if (!quiet) report("Couldn't find the Wireless debugging port. Make sure Wireless debugging is on, or enter the port shown under \"IP address & Port\".", true)
+                if (!quiet) report(L.adb.connectManager.couldntFindTheWirelessDebuggingPort, true)
                 return false
             }
-            _state.update { it.copy(busy = "Connecting to $host:$target…") }
+            _state.update { it.copy(busy = L.adb.connectManager.connectingToHostTarget(host, target)) }
             // Old ports from an earlier Wireless debugging session show up as offline; drop them first
             listDevices().filter { it.state == "offline" }.forEach { adb("disconnect ${it.serial}", 10) }
             val out = adb("connect $host:$target").output.trim()
             val ok = out.contains("connected to") && !out.contains("failed") && !out.contains("cannot")
-            if (ok) report("Connected to $host:$target") else if (!quiet) report(out.ifBlank { "adb connect failed" }, true)
+            if (ok) report(L.adb.connectManager.connectedToHostTarget(host, target)) else if (!quiet) report(out.ifBlank { L.adb.connectManager.adbConnectFailed }, true)
             _state.update { it.copy(devices = listDevices()) }
             return ok
         } finally {
@@ -325,7 +482,7 @@ object AdbConnectManager {
     fun disconnect(serial: String) = scope.launch {
         if (remote) AdbTunnel.disconnectServer(appContext) else adb("disconnect $serial", 10)
         _state.update { it.copy(devices = listDevices()) }
-        report("Disconnected $serial")
+        report(L.adb.connectManager.disconnectedSerial(serial))
     }
 
     // ---------------- for other features (android_automation_mcp) ----------------
@@ -335,7 +492,13 @@ object AdbConnectManager {
         if (!::appContext.isInitialized) return null
         refreshNow()
         _state.value.connectedDevice?.let { return it }
-        if (_state.value.adbInstalled != true || !_state.value.pairedOnce || !isWirelessDebuggingOn(appContext)) return null
+        if (_state.value.adbInstalled != true || !_state.value.pairedOnce) return null
+        if (!isWirelessDebuggingOn(appContext)) {
+            if (!maybeTurnOnWireless()) return null
+            // adbd needs a moment to come up (and Android may still ask about this Wi-Fi network)
+            withTimeoutOrNull(8_000) { while (!isWirelessDebuggingOn(appContext)) delay(250) } ?: return null
+            delay(1500)
+        }
         connectNow(null, quiet = true)
         return _state.value.connectedDevice
     }
@@ -378,7 +541,7 @@ object AdbConnectManager {
                 localServicePorts(PAIRING_SERVICE).collect { port ->
                     if (_state.value.pairing !is Pairing.InProgress) setPairing(Pairing.Ready(port))
                 }
-            }.onFailure { if (it !is kotlinx.coroutines.CancellationException) setPairing(Pairing.Failed(it.message ?: "mDNS discovery failed", null)) }
+            }.onFailure { if (it !is kotlinx.coroutines.CancellationException) setPairing(Pairing.Failed(it.message ?: L.adb.connectManager.mdnsDiscoveryFailed, null)) }
         }
     }
 
@@ -401,11 +564,11 @@ object AdbConnectManager {
             else -> knownPort to ""
         }
         if (code.length != 6) {
-            setPairing(Pairing.Failed("The pairing code has 6 digits.", knownPort))
+            setPairing(Pairing.Failed(L.adb.connectManager.thePairingCodeHas6Digits, knownPort))
             return
         }
         if (port == null) {
-            setPairing(Pairing.Failed("Pairing port not found yet. Tap \"Pair device with pairing code\" in Wireless debugging, or type the port and code.", null))
+            setPairing(Pairing.Failed(L.adb.connectManager.pairingPortNotFoundYetTap, null))
             return
         }
         pair(context, port, code)
@@ -420,11 +583,16 @@ object AdbConnectManager {
     private fun pair(context: Context, port: Int, code: String) = scope.launch {
         setPairing(Pairing.InProgress(port))
         val host = _state.value.host
-        val out = if (remote) AdbTunnel.pairServer(appContext, code, port).fold({ "Successfully paired" }, { it.message ?: "Pairing failed" })
+        val out = if (remote) AdbTunnel.pairServer(appContext, code, port).fold({ "Successfully paired" }, { it.message ?: L.adb.connectManager.pairingFailed })
         else adb("pair $host:$port $code", 25).output.trim()
         if (!out.contains("Successfully paired")) {
-            val reason = out.lineSequence().lastOrNull { it.isNotBlank() }?.removePrefix("error: ") ?: "No response from adb"
-            setPairing(Pairing.Failed("$reason. Check the code and try again.", port))
+            // Ubuntu 22.04's adb (29) has no `adb pair`: Wi-Fi pairing needs adb 30 or newer
+            if (out.contains("unknown command", ignoreCase = true)) {
+                setPairing(Pairing.Failed(L.adb.connectManager.thisAdbIsTooOldTo, port))
+                return@launch
+            }
+            val reason = out.lineSequence().lastOrNull { it.isNotBlank() }?.removePrefix("error: ") ?: L.adb.connectManager.noResponseFromAdb
+            setPairing(Pairing.Failed(L.adb.connectManager.reasonCheckTheCodeAndTry(reason), port))
             return@launch
         }
         prefs.edit().putBoolean("paired_once", true).apply()
@@ -435,10 +603,10 @@ object AdbConnectManager {
         val connected = connectNow(null, quiet = true)
         val device = _state.value.connectedDevice?.serial
         postResult(
-            if (connected) "ADB connected" else "ADB paired",
-            if (connected) "Connected to $device. Use adb in the terminal." else "Paired. Open JutiAgent → Settings → ADB Connect to connect."
+            if (connected) L.adb.connectManager.adbConnected else L.adb.connectManager.adbPaired,
+            if (connected) L.adb.connectManager.connectedToDeviceUseAdbIn(device) else L.adb.connectManager.pairedOpenAntigemSettingsAdbConnect
         )
-        if (!connected) report("Paired, but couldn't find the Wireless debugging port yet. Tap Connect.", true)
+        if (!connected) report(L.adb.connectManager.pairedButCouldntFindTheWireless, true)
         if (pairingServiceRunning) stopPairing(context)
     }
 
@@ -493,8 +661,8 @@ object AdbConnectManager {
     private fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         context.getSystemService(NotificationManager::class.java)?.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "ADB pairing", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Enter the Wireless debugging pairing code without leaving Settings"
+            NotificationChannel(CHANNEL_ID, L.adb.connectManager.adbPairing, NotificationManager.IMPORTANCE_HIGH).apply {
+                description = L.adb.connectManager.enterTheWirelessDebuggingPairingCode
                 setShowBadge(false)
             }
         )
@@ -504,11 +672,11 @@ object AdbConnectManager {
         ensureChannel(context)
         val pairing = _state.value.pairing
         val (title, text) = when (pairing) {
-            is Pairing.Ready -> "Pairing service found" to "Enter the 6-digit Wi-Fi pairing code shown in Wireless debugging."
-            is Pairing.InProgress -> "Pairing…" to "Pairing with ${_state.value.host}:${pairing.port}"
-            is Pairing.Failed -> "Pairing failed" to pairing.message
-            is Pairing.Paired -> "Paired" to "Connecting…"
-            else -> "Waiting for pairing code" to "Open Wireless debugging → Pair device with pairing code. Then enter the code here."
+            is Pairing.Ready -> L.adb.connectManager.pairingServiceFound to L.adb.connectManager.enterThe6DigitWiFi
+            is Pairing.InProgress -> L.adb.connectManager.pairing to L.adb.connectManager.pairingWithHostPort(_state.value.host, pairing.port)
+            is Pairing.Failed -> L.adb.connectManager.pairingFailed to pairing.message
+            is Pairing.Paired -> L.adb.connectManager.paired to L.adb.connectManager.connecting
+            else -> L.adb.connectManager.waitingForPairingCode to L.adb.connectManager.openWirelessDebuggingPairDeviceWith
         }
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -522,14 +690,14 @@ object AdbConnectManager {
             .setContentIntent(PendingIntent.getActivity(context, 0,
                 Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).putExtra(":settings:fragment_args_key", "toggle_adb_wireless"),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-            .addAction(0, "Stop", servicePendingIntent(context, AdbPairingService.ACTION_STOP, 1, mutable = false))
+            .addAction(0, L.common.stop, servicePendingIntent(context, AdbPairingService.ACTION_STOP, 1, mutable = false))
         if (pairing is Pairing.InProgress || pairing is Pairing.Paired) {
             builder.setProgress(0, 0, true)
         } else {
             val hasPort = pairing is Pairing.Ready || (pairing as? Pairing.Failed)?.port != null
-            val label = if (hasPort) "Enter pairing code" else "Enter port and code"
+            val label = if (hasPort) L.adb.connectManager.enterPairingCode else L.adb.connectManager.enterPortAndCode
             val input = RemoteInput.Builder(KEY_PAIRING_CODE)
-                .setLabel(if (hasPort) "6-digit pairing code" else "Port and code, e.g. 37123 482916")
+                .setLabel(if (hasPort) L.adb.connectManager.n6DigitPairingCode else L.adb.connectManager.portAndCodeEG37123)
                 .build()
             builder.addAction(
                 NotificationCompat.Action.Builder(0, label, servicePendingIntent(context, AdbPairingService.ACTION_CODE, 2, mutable = true))
