@@ -2,6 +2,7 @@ package com.example.gemini.data.render
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -26,6 +27,7 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 import kotlin.coroutines.coroutineContext
+import com.example.gemini.i18n.L
 
 /**
  * The parts of chat rendering that can be turned on: chemistry `\ce{}` (native, always available) and the blocks
@@ -33,19 +35,21 @@ import kotlin.coroutines.coroutineContext
  */
 enum class RenderComponent(
     val id: String,
-    val title: String,
-    val summary: String,
+    private val titleText: () -> String,
+    private val summaryText: () -> String,
     val library: String,
     val version: String,
     val fromBundle: Boolean
 ) {
-    CHEM("chem", "Chemical equations", "\\ce{…} reactions and formulas inside \$…\$, drawn natively", "mhchem syntax", "built in", false),
-    SMILES("smiles", "Molecule structures", "```smiles blocks: 2D structures from SMILES strings", "SmilesDrawer", "2.4.1", true),
-    FUNCTION_PLOT("functionplot", "Function plots", "```functionplot blocks: graphs, derivatives, tangents, areas", "function-plot", "1.26.0", true),
-    JSXGRAPH("jsxgraph", "Interactive geometry", "```jsxgraph blocks: draggable geometry, loci, graphs", "JSXGraph", "1.14.3", true),
-    MATTER("matter", "Physics simulations", "```matter blocks: 2D rigid-body simulations you can touch", "Matter.js", "0.20.0", true),
-    TIKZ("tikz", "TikZ, circuits & figures", "```tikz blocks: TikZ, circuitikz, pgfplots, chemfig, tikz-cd (TeX, compiled once and cached)", "TikZJax", "1.0.0-beta24", true),
-    MERMAID("mermaid", "Offline Mermaid", "Mermaid diagrams use the bundled copy instead of loading it from the internet", "Mermaid", "10.9.8", true);
+    CHEM("chem", { L.render.bundle.chemicalEquations }, { L.render.bundle.ceReactionsAndFormulasInsideDrawn }, "mhchem syntax", "built in", false),
+    SMILES("smiles", { L.render.bundle.moleculeStructures }, { L.render.bundle.smilesBlocks2dStructuresFromSmiles }, "SmilesDrawer", "2.4.1", true),
+    FUNCTION_PLOT("functionplot", { L.render.bundle.functionPlots }, { L.render.bundle.functionplotBlocksGraphsDerivatives }, "function-plot", "1.26.0", true),
+    JSXGRAPH("jsxgraph", { L.render.bundle.interactiveGeometry }, { L.render.bundle.jsxgraphBlocksDraggableGeometryLoci }, "JSXGraph", "1.14.3", true),
+    MATTER("matter", { L.render.bundle.physicsSimulations }, { L.render.bundle.matterBlocks2dRigidBodySimulations }, "Matter.js", "0.20.0", true),
+    TIKZ("tikz", { L.render.bundle.tikzCircuitsFigures }, { L.render.bundle.tikzBlocksTikzCircuitikzPgfplotsChemfig }, "TikZJax", "1.0.0-beta24", true),
+    MERMAID("mermaid", { L.render.bundle.offlineMermaid }, { L.render.bundle.mermaidDiagramsUseTheBundledCopy }, "Mermaid", "10.9.8", true);
+    val title: String get() = titleText()
+    val summary: String get() = summaryText()
 }
 
 /**
@@ -138,7 +142,7 @@ object RenderBundle {
         _active.value = _enabled.value.filter { !it.fromBundle || _installed.value }.toSet()
     }
 
-    private fun root(): File = File(filesDir ?: File("/data/data/com.termux/files"), "render-bundle")
+    private fun root(): File = File(filesDir ?: File("/data/data/${com.example.gemini.BuildConfig.APPLICATION_ID}/files"), "render-bundle")
     /** Where the current bundle is extracted. */
     fun bundleDir(): File = File(root(), BUNDLE_TAG)
     /** Compiled TikZ pictures (SVG), kept across bundle updates until cleared. */
@@ -312,6 +316,12 @@ object RenderBundle {
             intercept(request, allowNetwork)
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = !allowNetwork
+
+        // the renderer died (crash, or killed for memory): drop this view instead of letting the app crash
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            com.example.gemini.ui.components.ChatWebViewCache.onRendererGone(view)
+            return true
+        }
     }
 
     // ------------------------------------------------------------------ what agents are told
