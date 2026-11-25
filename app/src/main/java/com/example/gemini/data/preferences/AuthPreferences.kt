@@ -74,20 +74,33 @@ class AuthPreferences(private val context: Context) {
         val TERMINAL_CURSOR_STYLE = stringPreferencesKey("terminal_cursor_style")
         val TERMINAL_BUFFER_SIZE = androidx.datastore.preferences.core.intPreferencesKey("terminal_buffer_size")
         val TERMINAL_THEME = stringPreferencesKey("terminal_theme")
+        val TERMINAL_SESSION_PILL_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("terminal_session_pill_enabled")
+        val TERMINAL_DRAWER_SWIPE_AREA = stringPreferencesKey("terminal_drawer_swipe_area")
+        val TERMINAL_CHAR_BASED_INPUT = androidx.datastore.preferences.core.booleanPreferencesKey("terminal_char_based_input")
         val COMMAND_AUTO_EXECUTION_POLICY = stringPreferencesKey("command_auto_execution_policy")
         val COMMAND_SANDBOX_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("command_sandbox_enabled")
         val REQUIRE_APPROVAL_FOR_FILE_EDITS = androidx.datastore.preferences.core.booleanPreferencesKey("require_approval_for_file_edits")
         val DEFAULT_APPROVAL_SCOPE = stringPreferencesKey("default_approval_scope")
         val GROUP_CHATS_BY_WORKSPACE = androidx.datastore.preferences.core.booleanPreferencesKey("group_chats_by_workspace")
+        val GROUP_AGENT_STEPS = androidx.datastore.preferences.core.booleanPreferencesKey("group_agent_steps")
+        val GROUP_STEPS_MIN = androidx.datastore.preferences.core.intPreferencesKey("group_steps_min")
+        val SHOW_MESSAGE_STATS = androidx.datastore.preferences.core.booleanPreferencesKey("show_message_stats")
         val IS_FLOATING_BUBBLE_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("is_floating_bubble_enabled")
         val AUTO_SHOW_FLOATING_BUBBLE_ON_MINIMIZE = androidx.datastore.preferences.core.booleanPreferencesKey("auto_show_floating_bubble_on_minimize")
         val IS_FLOATING_SWITCHER_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("is_floating_switcher_enabled")
         val FLOATING_SWITCHER_ORIENTATION = stringPreferencesKey("floating_switcher_orientation")
         val FLOATING_SWITCHER_ITEMS = stringPreferencesKey("floating_switcher_items")
+        val FLOATING_SWITCHER_HANDLE_ICON = stringPreferencesKey("floating_switcher_handle_icon")
         val CHAT_HEADER_ITEMS = stringPreferencesKey("chat_header_items")
         val FLOATING_SWITCHER_AUTO_COLLAPSE_SEC = androidx.datastore.preferences.core.intPreferencesKey("floating_switcher_auto_collapse_sec")
         val FLOATING_SWITCHER_POS_X = androidx.datastore.preferences.core.floatPreferencesKey("floating_switcher_pos_x")
         val FLOATING_SWITCHER_POS_Y = androidx.datastore.preferences.core.floatPreferencesKey("floating_switcher_pos_y")
+        val PAGE_OVERVIEW_MODE = stringPreferencesKey("page_overview_mode")
+        val FLOATING_SWITCHER_SCALE = androidx.datastore.preferences.core.floatPreferencesKey("floating_switcher_scale")
+        val OVERVIEW_PILL_SCALE = androidx.datastore.preferences.core.floatPreferencesKey("overview_pill_scale")
+        val OVERVIEW_PILL_POS_X = androidx.datastore.preferences.core.floatPreferencesKey("overview_pill_pos_x")
+        val OVERVIEW_PILL_POS_Y = androidx.datastore.preferences.core.floatPreferencesKey("overview_pill_pos_y")
+        val PAGE_OVERVIEW_LAYOUT = stringPreferencesKey("page_overview_layout")
         val IS_FLOATING_DIAGNOSTICS_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("is_floating_diagnostics_enabled")
         val IS_NETWORK_INSPECTOR_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("is_network_inspector_enabled")
         val IS_FLOATING_NETWORK_INSPECTOR_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("is_floating_network_inspector_enabled")
@@ -96,22 +109,21 @@ class AuthPreferences(private val context: Context) {
         val AGY_BINARY_PATH = stringPreferencesKey("agy_binary_path")
         val CLAUDE_BINARY_PATH = stringPreferencesKey("claude_binary_path")
         val HAS_SEEN_TERMINAL_LAUNCHER_ONBOARDING = androidx.datastore.preferences.core.booleanPreferencesKey("has_seen_terminal_launcher_onboarding")
+        val IS_GEMMY_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("is_gemmy_enabled")
+        val HAS_SEEN_GEMMY_INTRO = androidx.datastore.preferences.core.booleanPreferencesKey("has_seen_gemmy_intro")
         val TERMINAL_LAUNCHER_STYLE = stringPreferencesKey("terminal_launcher_style") // "ANTITERM" or "TERMUX"
         val IS_TERMINAL_LAUNCHER_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("is_terminal_launcher_enabled")
+        val ENVIRONMENT_TYPE = stringPreferencesKey("environment_type") // "TERMUX" or "UBUNTU_CHROOT"
+        val CHROOT_USERNAME = stringPreferencesKey("chroot_username")
 
         const val DEFAULT_BRIDGE_BINARY_PATH = "~/../usr/bin/agy_ide_bridge"
-        const val DEFAULT_UBUNTU_BRIDGE_BINARY_PATH = "/antigem/bin/agy_ide_bridge"
         const val DEFAULT_AGY_BINARY_PATH = "~/.local/bin/agy"
-        const val DEFAULT_UBUNTU_AGY_BINARY_PATH = "/root/.local/bin/agy"
         /** The app's Claude Code launcher (glibc loader); Claude's updater never touches it. */
         const val DEFAULT_CLAUDE_BINARY_PATH = "~/../usr/bin/claude"
-        const val DEFAULT_UBUNTU_CLAUDE_BINARY_PATH = "/root/.local/bin/claude"
         /** Where the official OpenCode installer (and the app's own installer) puts it. */
         const val DEFAULT_OPENCODE_BINARY_PATH = "~/.opencode/bin/opencode"
-        const val DEFAULT_UBUNTU_OPENCODE_BINARY_PATH = "/root/.opencode/bin/opencode"
-        /** Codex: the Termux package (`pkg install codex`) on com.termux; the official build's ~/.local/bin in Ubuntu. */
+        /** Codex: the Termux package (`pkg install codex`). */
         const val DEFAULT_CODEX_BINARY_PATH = "~/../usr/bin/codex"
-        const val DEFAULT_UBUNTU_CODEX_BINARY_PATH = "/root/.local/bin/codex"
 
         const val TOKEN_PREFIX = "x-ag"
         const val TOKEN_SUFFIX = "_9qx"
@@ -178,9 +190,21 @@ class AuthPreferences(private val context: Context) {
         val currentFramedHeader: String
             get() = buildFramedHeader(currentSecurityToken)
 
-        // per app (see the build flavors): com.antigem uses other ports than com.termux so both can run together
+        // this build (com.termux) uses the old com.termux ports (see build.gradle.kts)
         val DEFAULT_HUB_URL = "http://127.0.0.1:${com.example.gemini.BuildConfig.HUB_PORT}"
         val DEFAULT_BRIDGE_HTTP_URL = "http://127.0.0.1:${com.example.gemini.BuildConfig.BRIDGE_PORT}"
+
+        /**
+         * The rooted Ubuntu chroot listens on ports of its own (Termux's + this): its bridge can outlive the app, so a
+         * chroot bridge still running never blocks the Termux one after a switch (and both could run at once).
+         */
+        const val CHROOT_PORT_OFFSET = 100
+        val DEFAULT_CHROOT_HUB_URL = "http://127.0.0.1:${com.example.gemini.BuildConfig.HUB_PORT + CHROOT_PORT_OFFSET}"
+        val DEFAULT_CHROOT_BRIDGE_HTTP_URL = "http://127.0.0.1:${com.example.gemini.BuildConfig.BRIDGE_PORT + CHROOT_PORT_OFFSET}"
+
+        /** This phone's default addresses for the Termux environment or the Ubuntu chroot. */
+        fun defaultLocalHubUrl(chroot: Boolean) = if (chroot) DEFAULT_CHROOT_HUB_URL else DEFAULT_HUB_URL
+        fun defaultLocalBridgeUrl(chroot: Boolean) = if (chroot) DEFAULT_CHROOT_BRIDGE_HTTP_URL else DEFAULT_BRIDGE_HTTP_URL
 
         /** The defaults every install used before ports became per app; a saved copy of them follows the new default. */
         private const val LEGACY_HUB_URL = "http://127.0.0.1:1235"
@@ -469,6 +493,46 @@ class AuthPreferences(private val context: Context) {
         th
     }
 
+    /** The terminal's floating session pill (top right). Off (the default): sessions are switched from the drawer, like Termux. */
+    val terminalSessionPillEnabled: Flow<Boolean> = context.dataStore.data
+        .map { it[TERMINAL_SESSION_PILL_ENABLED] ?: false }
+
+    fun getTerminalSessionPillEnabledSync(): Boolean = syncPrefs.getBoolean("terminal_session_pill_enabled", false)
+
+    suspend fun saveTerminalSessionPillEnabled(enabled: Boolean) {
+        syncPrefs.edit().putBoolean("terminal_session_pill_enabled", enabled).apply()
+        context.dataStore.edit { it[TERMINAL_SESSION_PILL_ENABLED] = enabled }
+    }
+
+    /**
+     * Where on the terminal's left edge the 200dp band kept from gesture navigation's Back swipe sits, so a swipe
+     * there always opens the sessions drawer: "TOP", "MIDDLE" or "BOTTOM".
+     */
+    val terminalDrawerSwipeArea: Flow<String> = context.dataStore.data
+        .map { it[TERMINAL_DRAWER_SWIPE_AREA] ?: "TOP" }
+
+    fun getTerminalDrawerSwipeAreaSync(): String = syncPrefs.getString("terminal_drawer_swipe_area", "TOP") ?: "TOP"
+
+    suspend fun saveTerminalDrawerSwipeArea(area: String) {
+        syncPrefs.edit().putString("terminal_drawer_swipe_area", area).apply()
+        context.dataStore.edit { it[TERMINAL_DRAWER_SWIPE_AREA] = area }
+    }
+
+    /**
+     * Terminal keyboard input mode. Off (the default): text mode, so the keyboard shows its toolbar and clipboard
+     * (suggestions and autocorrect off). On: key presses only (Android's TYPE_NULL), for keyboards that misbehave in
+     * text mode; no keyboard clipboard then.
+     */
+    val terminalCharBasedInput: Flow<Boolean> = context.dataStore.data
+        .map { it[TERMINAL_CHAR_BASED_INPUT] ?: false }
+
+    fun getTerminalCharBasedInputSync(): Boolean = syncPrefs.getBoolean("terminal_char_based_input", false)
+
+    suspend fun saveTerminalCharBasedInput(enabled: Boolean) {
+        syncPrefs.edit().putBoolean("terminal_char_based_input", enabled).apply()
+        context.dataStore.edit { it[TERMINAL_CHAR_BASED_INPUT] = enabled }
+    }
+
     // a PC in use (Connect to PC) is the SSH server; its login is this phone's key, never a password
     val termuxSshHost: Flow<String> = context.dataStore.data.map { pcOverride?.host ?: it[TERMUX_SSH_HOST] ?: "127.0.0.1" }
     val termuxSshPort: Flow<Int> = context.dataStore.data.map { pcOverride?.sshPort ?: it[TERMUX_SSH_PORT]?.toIntOrNull() ?: 8022 }
@@ -664,6 +728,37 @@ class AuthPreferences(private val context: Context) {
 
     fun isRemoteModeSync(): Boolean = currentRemoteMode
 
+    fun isChrootModeSync(): Boolean = syncPrefs.getString("environment_type", "TERMUX") == "UBUNTU_CHROOT"
+
+    /** Waits until the settings saved with apply() are on disk (an empty commit writes after them), e.g. before exit(). */
+    fun flushSync() {
+        syncPrefs.edit().commit()
+    }
+
+    fun saveEnvironmentTypeSync(type: String) {
+        syncPrefs.edit().putString("environment_type", type).commit()
+    }
+
+    suspend fun setEnvironmentType(type: String) {
+        context.dataStore.edit { prefs ->
+            prefs[ENVIRONMENT_TYPE] = type
+        }
+        saveEnvironmentTypeSync(type)
+    }
+
+    fun getChrootUsernameSync(): String = syncPrefs.getString("chroot_username", "ubuntu") ?: "ubuntu"
+
+    fun saveChrootUsernameSync(username: String) {
+        syncPrefs.edit().putString("chroot_username", username).commit()
+    }
+
+    suspend fun setChrootUsername(username: String) {
+        context.dataStore.edit { prefs ->
+            prefs[CHROOT_USERNAME] = username
+        }
+        saveChrootUsernameSync(username)
+    }
+
     fun saveRemoteModeSync(enabled: Boolean) {
         currentRemoteMode = enabled
         syncPrefs.edit().putBoolean("remote_mode", enabled).commit()
@@ -732,6 +827,23 @@ class AuthPreferences(private val context: Context) {
     }
 
     /** Paths ON THE SERVER (blank = automatic: the bridge the app installs, `agy`/`claude` found by the bridge). */
+    /** The Ubuntu chroot's agent paths, inside the chroot ("" = the default: where each agent's own installer puts it). */
+    fun getChrootBridgeBinSync(): String = syncPrefs.getString("chroot_bridge_bin", "") ?: ""
+    fun getChrootAgyBinSync(): String = syncPrefs.getString("chroot_agy_bin", "") ?: ""
+    fun getChrootClaudeBinSync(): String = syncPrefs.getString("chroot_claude_bin", "") ?: ""
+    fun getChrootOpenCodeBinSync(): String = syncPrefs.getString("chroot_opencode_bin", "") ?: ""
+    fun getChrootCodexBinSync(): String = syncPrefs.getString("chroot_codex_bin", "") ?: ""
+
+    fun saveChrootBinariesSync(bridge: String, agy: String, claude: String, openCode: String, codex: String) {
+        syncPrefs.edit()
+            .putString("chroot_bridge_bin", bridge.trim())
+            .putString("chroot_agy_bin", agy.trim())
+            .putString("chroot_claude_bin", claude.trim())
+            .putString("chroot_opencode_bin", openCode.trim())
+            .putString("chroot_codex_bin", codex.trim())
+            .apply()
+    }
+
     fun getRemoteBridgeBinSync(): String = syncPrefs.getString("remote_bridge_bin", "") ?: ""
     fun getRemoteAgyBinSync(): String = syncPrefs.getString("remote_agy_bin", "") ?: ""
     fun getRemoteClaudeBinSync(): String = syncPrefs.getString("remote_claude_bin", "") ?: ""
@@ -808,6 +920,18 @@ class AuthPreferences(private val context: Context) {
         }
     }
 
+    /**
+     * The phone's runtime changed (Termux ↔ Ubuntu chroot): addresses that were the other runtime's defaults become
+     * this one's. An address the user set stays as it is; server mode keeps its server addresses.
+     */
+    suspend fun applyLocalRuntimeUrls(chroot: Boolean) {
+        if (currentRemoteMode) return
+        val hub = storedHubUrl.trim().trimEnd('/')
+        val bridge = storedBridgeHttpUrl.trim().trimEnd('/')
+        if (hub.isEmpty() || hub == defaultLocalHubUrl(!chroot)) saveAgyHubUrl(defaultLocalHubUrl(chroot))
+        if (bridge.isEmpty() || bridge == defaultLocalBridgeUrl(!chroot)) saveAgyBridgeHttpUrl(defaultLocalBridgeUrl(chroot))
+    }
+
     suspend fun saveThemeMode(mode: String) {
         syncPrefs.edit().putString("app_theme_mode", mode).commit()
         context.dataStore.edit { prefs ->
@@ -819,6 +943,37 @@ class AuthPreferences(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs[GROUP_CHATS_BY_WORKSPACE] = enabled
         }
+    }
+
+    /** Runs of a reply's thinking and tool steps fold into one pill (on by default); off: every step is its own tile. */
+    val groupAgentSteps: Flow<Boolean> = context.dataStore.data.map { it[GROUP_AGENT_STEPS] ?: true }
+
+    fun getGroupAgentStepsSync(): Boolean = syncPrefs.getBoolean("group_agent_steps", true)
+
+    suspend fun saveGroupAgentSteps(enabled: Boolean) {
+        syncPrefs.edit().putBoolean("group_agent_steps", enabled).apply()
+        context.dataStore.edit { it[GROUP_AGENT_STEPS] = enabled }
+    }
+
+    /** Group Agent Steps → Fold after: a run folds with at least this many steps (1–10, default 2; 1 = every run). */
+    val groupStepsMin: Flow<Int> = context.dataStore.data.map { (it[GROUP_STEPS_MIN] ?: 2).coerceIn(1, 10) }
+
+    fun getGroupStepsMinSync(): Int = syncPrefs.getInt("group_steps_min", 2).coerceIn(1, 10)
+
+    suspend fun saveGroupStepsMin(steps: Int) {
+        val n = steps.coerceIn(1, 10)
+        syncPrefs.edit().putInt("group_steps_min", n).apply()
+        context.dataStore.edit { it[GROUP_STEPS_MIN] = n }
+    }
+
+    /** The token, cache and time stats under each reply. */
+    val showMessageStats: Flow<Boolean> = context.dataStore.data.map { it[SHOW_MESSAGE_STATS] ?: true }
+
+    fun getShowMessageStatsSync(): Boolean = syncPrefs.getBoolean("show_message_stats", true)
+
+    suspend fun saveShowMessageStats(show: Boolean) {
+        syncPrefs.edit().putBoolean("show_message_stats", show).apply()
+        context.dataStore.edit { it[SHOW_MESSAGE_STATS] = show }
     }
 
     fun saveTerminalPreferencesSync(fontSize: Int, cursorStyle: String = "BAR", bufferSize: Int = 20000, theme: String = "DEFAULT") {
@@ -916,6 +1071,17 @@ class AuthPreferences(private val context: Context) {
         context.dataStore.edit { it[FLOATING_SWITCHER_ORIENTATION] = orientation }
     }
 
+    /** Icon of the collapsed floating switcher pill (an id from FloatingSwitcherHandleIcons). */
+    val floatingSwitcherHandleIcon: Flow<String> = context.dataStore.data
+        .map { it[FLOATING_SWITCHER_HANDLE_ICON] ?: "grid" }
+
+    fun getFloatingSwitcherHandleIconSync(): String = syncPrefs.getString("floating_switcher_handle_icon", "grid") ?: "grid"
+
+    suspend fun saveFloatingSwitcherHandleIcon(icon: String) {
+        syncPrefs.edit().putString("floating_switcher_handle_icon", icon).apply()
+        context.dataStore.edit { it[FLOATING_SWITCHER_HANDLE_ICON] = icon }
+    }
+
     val floatingSwitcherItems: Flow<List<String>> = context.dataStore.data
         .map {
             val raw = it[FLOATING_SWITCHER_ITEMS] ?: "chat,ide,terminal,browser,notes,files"
@@ -991,6 +1157,74 @@ class AuthPreferences(private val context: Context) {
             it[FLOATING_SWITCHER_POS_X] = x
             it[FLOATING_SWITCHER_POS_Y] = y
         }
+    }
+
+    /**
+     * The page overview (a card per page) and how it opens: "SWITCHER" a tap on the switcher's pill (default; the pill
+     * has no icon panel then), "OWN_PILL" a second pill of its own (the switcher pill keeps its icon panel), "OFF".
+     */
+    val pageOverviewMode: Flow<String> = context.dataStore.data
+        .map { it[PAGE_OVERVIEW_MODE] ?: "SWITCHER" }
+
+    fun getPageOverviewModeSync(): String = syncPrefs.getString("page_overview_mode", "SWITCHER") ?: "SWITCHER"
+
+    suspend fun savePageOverviewMode(mode: String) {
+        syncPrefs.edit().putString("page_overview_mode", mode).apply()
+        context.dataStore.edit { it[PAGE_OVERVIEW_MODE] = mode }
+    }
+
+    /** Size of the switcher (pill and panel together); 1 = normal. */
+    val floatingSwitcherScale: Flow<Float> = context.dataStore.data
+        .map { it[FLOATING_SWITCHER_SCALE] ?: 1f }
+
+    fun getFloatingSwitcherScaleSync(): Float = syncPrefs.getFloat("floating_switcher_scale", 1f)
+
+    suspend fun saveFloatingSwitcherScale(scale: Float) {
+        syncPrefs.edit().putFloat("floating_switcher_scale", scale).apply()
+        context.dataStore.edit { it[FLOATING_SWITCHER_SCALE] = scale }
+    }
+
+    /** The page overview can be opened, so page pictures are worth taking. */
+    fun isPageOverviewInUseSync(): Boolean = getPageOverviewModeSync() != "OFF"
+
+    /** Size of the overview's own pill ("OWN_PILL" mode); 1 = normal. */
+    val overviewPillScale: Flow<Float> = context.dataStore.data
+        .map { it[OVERVIEW_PILL_SCALE] ?: 1f }
+
+    fun getOverviewPillScaleSync(): Float = syncPrefs.getFloat("overview_pill_scale", 1f)
+
+    suspend fun saveOverviewPillScale(scale: Float) {
+        syncPrefs.edit().putFloat("overview_pill_scale", scale).apply()
+        context.dataStore.edit { it[OVERVIEW_PILL_SCALE] = scale }
+    }
+
+    // Default: right edge, above the switcher's default spot (right-center)
+    val overviewPillPosX: Flow<Float> = context.dataStore.data
+        .map { it[OVERVIEW_PILL_POS_X] ?: 0.95f }
+
+    val overviewPillPosY: Flow<Float> = context.dataStore.data
+        .map { it[OVERVIEW_PILL_POS_Y] ?: 0.35f }
+
+    fun getOverviewPillPositionSync(): Pair<Float, Float> =
+        syncPrefs.getFloat("overview_pill_pos_x", 0.95f) to syncPrefs.getFloat("overview_pill_pos_y", 0.35f)
+
+    suspend fun saveOverviewPillPosition(x: Float, y: Float) {
+        syncPrefs.edit().putFloat("overview_pill_pos_x", x).putFloat("overview_pill_pos_y", y).apply()
+        context.dataStore.edit {
+            it[OVERVIEW_PILL_POS_X] = x
+            it[OVERVIEW_PILL_POS_Y] = y
+        }
+    }
+
+    /** How the page overview shows the pages: "LARGE" (2 big cards a row, scrolls; default), "FIT" (all at once) or "LIST". */
+    val pageOverviewLayout: Flow<String> = context.dataStore.data
+        .map { it[PAGE_OVERVIEW_LAYOUT] ?: "LARGE" }
+
+    fun getPageOverviewLayoutSync(): String = syncPrefs.getString("page_overview_layout", "LARGE") ?: "LARGE"
+
+    suspend fun savePageOverviewLayout(layout: String) {
+        syncPrefs.edit().putString("page_overview_layout", layout).apply()
+        context.dataStore.edit { it[PAGE_OVERVIEW_LAYOUT] = layout }
     }
 
     val isFloatingDiagnosticsEnabled: Flow<Boolean> = context.dataStore.data
@@ -1072,10 +1306,10 @@ class AuthPreferences(private val context: Context) {
     }
 
     fun getDefaultBridgeBinaryPath(): String =
-        if (context.packageName == "com.termux") DEFAULT_BRIDGE_BINARY_PATH else DEFAULT_UBUNTU_BRIDGE_BINARY_PATH
+        DEFAULT_BRIDGE_BINARY_PATH
 
     fun getDefaultAgyBinaryPath(): String =
-        if (context.packageName == "com.termux") DEFAULT_AGY_BINARY_PATH else DEFAULT_UBUNTU_AGY_BINARY_PATH
+        DEFAULT_AGY_BINARY_PATH
 
     val agyBridgeBinaryPath: Flow<String> = context.dataStore.data.map {
         it[AGY_BRIDGE_BINARY_PATH] ?: getAgyBridgeBinaryPathSync()
@@ -1104,7 +1338,7 @@ class AuthPreferences(private val context: Context) {
     }
 
     fun getDefaultClaudeBinaryPath(): String =
-        if (context.packageName == "com.termux") DEFAULT_CLAUDE_BINARY_PATH else DEFAULT_UBUNTU_CLAUDE_BINARY_PATH
+        DEFAULT_CLAUDE_BINARY_PATH
 
     fun getClaudeBinaryPathSync(): String =
         syncPrefs.getString("claude_binary_path", getDefaultClaudeBinaryPath()) ?: getDefaultClaudeBinaryPath()
@@ -1116,7 +1350,7 @@ class AuthPreferences(private val context: Context) {
     }
 
     fun getDefaultOpenCodeBinaryPath(): String =
-        if (context.packageName == "com.termux") DEFAULT_OPENCODE_BINARY_PATH else DEFAULT_UBUNTU_OPENCODE_BINARY_PATH
+        DEFAULT_OPENCODE_BINARY_PATH
 
     fun getOpenCodeBinaryPathSync(): String =
         syncPrefs.getString("opencode_binary_path", getDefaultOpenCodeBinaryPath()) ?: getDefaultOpenCodeBinaryPath()
@@ -1126,7 +1360,7 @@ class AuthPreferences(private val context: Context) {
     }
 
     fun getDefaultCodexBinaryPath(): String =
-        if (context.packageName == "com.termux") DEFAULT_CODEX_BINARY_PATH else DEFAULT_UBUNTU_CODEX_BINARY_PATH
+        DEFAULT_CODEX_BINARY_PATH
 
     fun getCodexBinaryPathSync(): String =
         syncPrefs.getString("codex_binary_path", getDefaultCodexBinaryPath()) ?: getDefaultCodexBinaryPath()
@@ -1141,6 +1375,20 @@ class AuthPreferences(private val context: Context) {
 
     suspend fun setHasSeenTerminalLauncherOnboarding(seen: Boolean) {
         context.dataStore.edit { it[HAS_SEEN_TERMINAL_LAUNCHER_ONBOARDING] = seen }
+    }
+
+    /** Gemmy, the floating cartoon buddy: on by default (Settings → Appearance). */
+    val isGemmyEnabled: Flow<Boolean> = context.dataStore.data.map { it[IS_GEMMY_ENABLED] ?: true }
+
+    suspend fun setGemmyEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[IS_GEMMY_ENABLED] = enabled }
+    }
+
+    /** The one-time "Meet Gemmy" dialog was answered; Gemmy only appears after that. */
+    val hasSeenGemmyIntro: Flow<Boolean> = context.dataStore.data.map { it[HAS_SEEN_GEMMY_INTRO] ?: false }
+
+    suspend fun setHasSeenGemmyIntro(seen: Boolean) {
+        context.dataStore.edit { it[HAS_SEEN_GEMMY_INTRO] = seen }
     }
 
     val terminalLauncherStyle: Flow<String> = context.dataStore.data.map {
