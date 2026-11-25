@@ -26,8 +26,10 @@ import (
 	"gemini-server/pkg/config"
 	"gemini-server/pkg/handlers"
 	"gemini-server/pkg/hub"
+	"gemini-server/pkg/memory"
 	"gemini-server/pkg/opencode"
 	"gemini-server/pkg/plugins"
+	"gemini-server/pkg/relocate"
 	"gemini-server/pkg/runlog"
 	"gemini-server/pkg/security"
 	"gemini-server/pkg/ws"
@@ -132,6 +134,12 @@ func formatHumanCrash(p interface{}, rawStack []byte) (reason string, location s
 }
 
 func main() {
+	// `agy_ide_bridge relocate-debs …`: AntiGem's apt hook and dpkg wrapper rewrite Termux .debs with it (see
+	// pkg/relocate); nothing of the bridge itself starts
+	if len(os.Args) > 1 && os.Args[1] == "relocate-debs" {
+		os.Exit(relocate.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	cfg := config.LoadConfig()
 
 	var unpatchOnly bool
@@ -376,6 +384,9 @@ func main() {
 	// Project checkpoints: a hidden copy of the project before each chat message (any agent), restore with preview
 	mux.Handle("/api/checkpoints/", checkpoint.NewManager(cfg.HomeDir))
 
+	// Agent memory: memory files and chat history the agents read (~/.antigem/memory), shared by every agent
+	mux.Handle("/api/memory/", memory.NewManager(cfg.HomeDir))
+
 	// Custom AntiGem plugins on disk: list, install (ZIP or GitHub repository), update, remove, export
 	pluginMgr := plugins.NewManager(cfg.HomeDir)
 	mux.Handle("/api/custom-plugins/", pluginMgr)
@@ -402,6 +413,8 @@ func main() {
 	mux.HandleFunc("/api/agy/cli/install", h.AgyCliInstallHandler)
 	mux.HandleFunc("/api/agy/cli/update", h.AgyCliUpdateHandler)
 	mux.HandleFunc("/api/agy/hub/diag", h.AgyHubDiagHandler)
+	mux.HandleFunc("/api/agy/accounts", h.AgyAccountsHandler)
+	mux.HandleFunc("/api/agy/accounts/", h.AgyAccountsHandler)
 	mux.HandleFunc("/api/models", h.ModelsHandler)
 	mux.HandleFunc("/api/models/refresh", h.ModelsHandler)
 	mux.HandleFunc("/api/quotas", h.QuotasHandler)
@@ -690,6 +703,10 @@ func main() {
 	hubMgr.OnLoginURL = h.HandleLoginURL
 	hubMgr.OnStatusChange = func(status string, csrfToken string, errorMsg string, logs []string) {
 		wsHub.BroadcastHubStatus(status, hubPort, csrfToken, errorMsg, logs)
+		// agy runs, so it is installed: watch its login for account changes (no-op when already watching)
+		if status == hub.HubStatusOnline {
+			h.EnsureAgyAccountWatcher()
+		}
 	}
 	if !skipHub {
 		hubMgr.StartContinuousMonitor()
@@ -705,6 +722,7 @@ func main() {
 	fmt.Println("\n🛑 Shutting down antiGem server gracefully...")
 
 	// 1. Close all active WebSocket client connections immediately
+	h.StopAgyAccountWatcher()
 	wsHub.Close()
 
 	// 2. Stop Claude Code sessions, then the AGY Hub process group and continuous background monitor
