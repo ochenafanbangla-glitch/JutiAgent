@@ -1,4 +1,4 @@
-package com.termux.app
+package com.example.gemini.app
 
 import com.example.gemini.data.receiver.TermuxSystemReceiver as CoreSystemReceiver
 
