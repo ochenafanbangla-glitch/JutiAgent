@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -25,13 +27,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -42,8 +48,11 @@ import com.example.gemini.data.notes.NotesRepository
 import com.example.gemini.data.notes.TodoItem
 import com.example.gemini.theme.ClaudeTerracotta
 import kotlinx.coroutines.launch
+import com.example.gemini.i18n.L
 
-private enum class NotesFilter(val label: String) { ALL("All"), NOTES("Notes"), TODOS("To-dos") }
+private enum class NotesFilter(private val labelText: () -> String) { ALL({ L.notes.screen.all }), NOTES({ L.common.notes }), TODOS({ L.notes.screen.toDos }) ;
+    val label: String get() = labelText()
+}
 
 /**
  * Notes and to-do lists. Edits go straight to NotesRepository, so changes made by agents through notes_mcp show up here at once
@@ -70,8 +79,8 @@ fun NotesScreen(
         if (note.isEmpty) return
         scope.launch {
             snackbar.currentSnackbarData?.dismiss()
-            val label = if (note.kind == NoteKind.TODO) "To-do list deleted" else "Note deleted"
-            if (snackbar.showSnackbar(label, actionLabel = "Undo", duration = SnackbarDuration.Short) == SnackbarResult.ActionPerformed) {
+            val label = if (note.kind == NoteKind.TODO) L.notes.screen.toDoListDeleted else L.notes.screen.noteDeleted
+            if (snackbar.showSnackbar(label, actionLabel = L.common.undo, duration = SnackbarDuration.Short) == SnackbarResult.ActionPerformed) {
                 NotesRepository.restore(note)
             }
         }
@@ -171,22 +180,22 @@ private fun NotesList(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = { if (searching) { searching = false; query = "" } else onClose() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = L.common.back)
                     }
                     if (searching) {
                         LaunchedEffect(Unit) { searchFocus.requestFocus() }
                         PlainField(
                             value = query,
                             onValueChange = { query = it },
-                            placeholder = "Search notes",
+                            placeholder = L.notes.screen.searchNotes,
                             textStyle = TextStyle(fontSize = 16.sp),
                             singleLine = true,
                             modifier = Modifier.weight(1f).focusRequester(searchFocus)
                         )
-                        if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, contentDescription = "Clear search") }
+                        if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, contentDescription = L.notes.screen.clearSearch) }
                     } else {
-                        Text("Notes", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).padding(start = 4.dp))
-                        IconButton(onClick = { searching = true }) { Icon(Icons.Outlined.Search, contentDescription = "Search") }
+                        Text(L.common.notes, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f).padding(start = 4.dp))
+                        IconButton(onClick = { searching = true }) { Icon(Icons.Outlined.Search, contentDescription = L.common.search) }
                     }
                 }
                 Row(
@@ -214,11 +223,11 @@ private fun NotesList(
         Box(Modifier.fillMaxSize()) {
             if (shown.isEmpty()) {
                 EmptyState(
-                    if (q.isNotEmpty()) "Nothing matches \"$query\""
+                    if (q.isNotEmpty()) L.notes.screen.nothingMatchesQuery(query)
                     else when (filter) {
-                        NotesFilter.TODOS -> "No to-do lists yet"
-                        NotesFilter.NOTES -> "No notes yet"
-                        NotesFilter.ALL -> "No notes or to-do lists yet"
+                        NotesFilter.TODOS -> L.notes.screen.noToDoListsYet
+                        NotesFilter.NOTES -> L.notes.screen.noNotesYet
+                        NotesFilter.ALL -> L.notes.screen.noNotesOrToDoLists
                     }
                 )
             } else {
@@ -232,9 +241,9 @@ private fun NotesList(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     if (pinned.isNotEmpty()) {
-                        item(key = "h_pinned") { SectionHeader("Pinned") }
+                        item(key = "h_pinned") { SectionHeader(L.notes.screen.pinned) }
                         items(pinned, key = { it.id }) { NoteCard(it, onClick = { onOpen(it) }) }
-                        if (others.isNotEmpty()) item(key = "h_others") { SectionHeader("Others") }
+                        if (others.isNotEmpty()) item(key = "h_others") { SectionHeader(L.notes.screen.others) }
                     }
                     items(others, key = { it.id }) { NoteCard(it, onClick = { onOpen(it) }) }
                 }
@@ -242,16 +251,16 @@ private fun NotesList(
 
             Box(Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(20.dp)) {
                 FloatingActionButton(onClick = { showNewMenu = true }, containerColor = ClaudeTerracotta, contentColor = MaterialTheme.colorScheme.onPrimary) {
-                    Icon(Icons.Outlined.Add, contentDescription = "New")
+                    Icon(Icons.Outlined.Add, contentDescription = L.notes.screen.new)
                 }
                 DropdownMenu(expanded = showNewMenu, onDismissRequest = { showNewMenu = false }) {
                     DropdownMenuItem(
-                        text = { Text("Note") },
+                        text = { Text(L.notes.screen.note) },
                         leadingIcon = { Icon(Icons.Outlined.EditNote, null) },
                         onClick = { showNewMenu = false; onNew(NoteKind.NOTE) }
                     )
                     DropdownMenuItem(
-                        text = { Text("To-do list") },
+                        text = { Text(L.notes.screen.toDoList) },
                         leadingIcon = { Icon(Icons.Outlined.Checklist, null) },
                         onClick = { showNewMenu = false; onNew(NoteKind.TODO) }
                     )
@@ -285,7 +294,7 @@ private fun EmptyState(message: String) {
         Text(message, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
         Spacer(Modifier.height(4.dp))
         Text(
-            "Tap + to add one, or ask an agent with the Notes MCP",
+            L.notes.screen.tapToAddOneOrAsk,
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
         )
@@ -308,7 +317,7 @@ private fun NoteCard(note: Note, onClick: () -> Unit) {
                     Spacer(Modifier.width(6.dp))
                 }
                 Text(
-                    note.title.ifBlank { "Untitled" },
+                    note.title.ifBlank { L.common.untitled },
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = if (note.title.isBlank()) muted else MaterialTheme.colorScheme.onSurface,
@@ -316,7 +325,7 @@ private fun NoteCard(note: Note, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                if (note.pinned) Icon(Icons.Outlined.PushPin, "Pinned", tint = ClaudeTerracotta, modifier = Modifier.size(16.dp))
+                if (note.pinned) Icon(Icons.Outlined.PushPin, L.notes.screen.pinned, tint = ClaudeTerracotta, modifier = Modifier.size(16.dp))
             }
             if (note.kind == NoteKind.TODO) {
                 note.items.filter { it.text.isNotBlank() }.take(4).forEach { item ->
@@ -378,31 +387,31 @@ private fun NoteEditor(note: Note, onBack: () -> Unit, onDelete: () -> Unit) {
                 Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 4.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = L.common.back) }
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = { NotesRepository.update(id) { it.copy(pinned = !it.pinned) } }) {
                     Icon(
                         Icons.Outlined.PushPin,
-                        contentDescription = if (note.pinned) "Unpin" else "Pin",
+                        contentDescription = if (note.pinned) L.notes.screen.unpin else L.notes.screen.pin,
                         tint = if (note.pinned) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                 }
                 Box {
-                    IconButton(onClick = { showMenu = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "More") }
+                    IconButton(onClick = { showMenu = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = L.common.more) }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                         if (note.kind == NoteKind.TODO) {
                             DropdownMenuItem(
-                                text = { Text("Check all") },
+                                text = { Text(L.notes.screen.checkAll) },
                                 leadingIcon = { Icon(Icons.Outlined.DoneAll, null) },
                                 onClick = { showMenu = false; NotesRepository.update(id) { n -> n.copy(items = n.items.map { it.copy(done = true) }) } }
                             )
                             DropdownMenuItem(
-                                text = { Text("Uncheck all") },
+                                text = { Text(L.notes.screen.uncheckAll) },
                                 leadingIcon = { Icon(Icons.Outlined.CheckBoxOutlineBlank, null) },
                                 onClick = { showMenu = false; NotesRepository.update(id) { n -> n.copy(items = n.items.map { it.copy(done = false) }) } }
                             )
                             DropdownMenuItem(
-                                text = { Text("Clear completed") },
+                                text = { Text(L.notes.screen.clearCompleted) },
                                 leadingIcon = { Icon(Icons.Outlined.ClearAll, null) },
                                 enabled = note.doneCount > 0,
                                 onClick = { showMenu = false; NotesRepository.update(id) { n -> n.copy(items = n.items.filterNot { it.done }) } }
@@ -410,7 +419,7 @@ private fun NoteEditor(note: Note, onBack: () -> Unit, onDelete: () -> Unit) {
                             HorizontalDivider()
                         }
                         DropdownMenuItem(
-                            text = { Text(if (note.kind == NoteKind.TODO) "Turn into note" else "Turn into to-do list") },
+                            text = { Text(if (note.kind == NoteKind.TODO) L.notes.screen.turnIntoNote else L.notes.screen.turnIntoToDoList) },
                             leadingIcon = { Icon(if (note.kind == NoteKind.TODO) Icons.Outlined.EditNote else Icons.Outlined.Checklist, null) },
                             onClick = {
                                 showMenu = false
@@ -430,7 +439,7 @@ private fun NoteEditor(note: Note, onBack: () -> Unit, onDelete: () -> Unit) {
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                            text = { Text(L.common.delete, color = MaterialTheme.colorScheme.error) },
                             leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = MaterialTheme.colorScheme.error) },
                             onClick = { showMenu = false; onDelete() }
                         )
@@ -442,9 +451,10 @@ private fun NoteEditor(note: Note, onBack: () -> Unit, onDelete: () -> Unit) {
         Column(
             Modifier
                 .fillMaxSize()
+                // outside the scroll: the scrolled area ends at the top of the keyboard, so text scrolled into view isn't behind it
+                .imePadding()
                 .bouncyVerticalScroll(rememberScrollState())
                 .navigationBarsPadding()
-                .imePadding()
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 24.dp)
         ) {
@@ -453,7 +463,7 @@ private fun NoteEditor(note: Note, onBack: () -> Unit, onDelete: () -> Unit) {
                 remoteValue = note.title,
                 currentRemote = { NotesRepository.get(id)?.title },
                 onValueChange = { v -> NotesRepository.update(id) { it.copy(title = v) } },
-                placeholder = "Title",
+                placeholder = L.notes.screen.title,
                 textStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold),
                 singleLine = true,
                 imeAction = ImeAction.Next,
@@ -466,7 +476,7 @@ private fun NoteEditor(note: Note, onBack: () -> Unit, onDelete: () -> Unit) {
                     remoteValue = note.text,
                     currentRemote = { NotesRepository.get(id)?.text },
                     onValueChange = { v -> NotesRepository.update(id) { it.copy(text = v) } },
-                    placeholder = if (note.kind == NoteKind.TODO) "Details" else "Note",
+                    placeholder = if (note.kind == NoteKind.TODO) L.common.details else L.notes.screen.note,
                     textStyle = TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
                     modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)
                 )
@@ -494,15 +504,15 @@ private fun NoteEditor(note: Note, onBack: () -> Unit, onDelete: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(Icons.Outlined.Add, null, tint = muted, modifier = Modifier.padding(horizontal = 12.dp).size(20.dp))
-                    Text("Add item", fontSize = 15.sp, color = muted)
+                    Text(L.notes.screen.addItem, fontSize = 15.sp, color = muted)
                 }
                 if (note.items.isNotEmpty()) {
-                    Text("${note.doneCount} of ${note.items.size} done", fontSize = 12.sp, color = muted.copy(alpha = 0.6f), modifier = Modifier.padding(top = 4.dp))
+                    Text(L.notes.screen.donecountOfItemscountDone(note.doneCount, note.items.size), fontSize = 12.sp, color = muted.copy(alpha = 0.6f), modifier = Modifier.padding(top = 4.dp))
                 }
             }
 
             Spacer(Modifier.height(16.dp))
-            Text("Edited ${relativeTime(note.updatedAt)}", fontSize = 11.sp, color = muted.copy(alpha = 0.5f))
+            Text(L.notes.screen.editedRelativetime(relativeTime(note.updatedAt)), fontSize = 11.sp, color = muted.copy(alpha = 0.5f))
         }
     }
 }
@@ -539,7 +549,7 @@ private fun TodoRow(
             onValueChange = { v ->
                 NotesRepository.update(noteId) { n -> n.copy(items = n.items.map { if (it.id == item.id) it.copy(text = v) else it }) }
             },
-            placeholder = "List item",
+            placeholder = L.notes.screen.listItem,
             textStyle = TextStyle(
                 fontSize = 16.sp,
                 textDecoration = if (item.done) TextDecoration.LineThrough else null
@@ -551,7 +561,7 @@ private fun TodoRow(
             modifier = Modifier.weight(1f).focusRequester(focusRequester)
         )
         IconButton(onClick = onRemove, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Outlined.Close, contentDescription = "Remove item", tint = muted, modifier = Modifier.size(18.dp))
+            Icon(Icons.Outlined.Close, contentDescription = L.notes.screen.removeItem, tint = muted, modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -574,14 +584,20 @@ private fun SyncedField(
     imeAction: ImeAction = ImeAction.Default,
     onImeAction: (() -> Unit)? = null
 ) {
-    var text by remember(key) { mutableStateOf(remoteValue) }
+    // A TextFieldValue, not a String, so PlainField knows where the caret is
+    var value by remember(key) { mutableStateOf(TextFieldValue(remoteValue)) }
     LaunchedEffect(key, remoteValue) {
         val latest = currentRemote()
-        if (latest != null && latest != text) text = latest
+        if (latest != null && latest != value.text) value = TextFieldValue(latest, value.selection) // caret kept, clamped to the new text
     }
     PlainField(
-        value = text,
-        onValueChange = { text = it; onValueChange(it) },
+        value = value,
+        onValueChange = { v ->
+            val textChanged = v.text != value.text
+            value = v
+            // only real edits reach the repository: a caret move alone would bump the note's "Edited" time
+            if (textChanged) onValueChange(v.text)
+        },
         placeholder = placeholder,
         textStyle = textStyle,
         textAlpha = textAlpha,
@@ -623,8 +639,57 @@ private fun PlainField(
     )
 }
 
+/**
+ * [PlainField] for a [TextFieldValue]. A multi-line one also scrolls the page to the caret when only the caret moves: the text
+ * field does that by itself only when the text changes, so the keyboard's arrow keys (Gboard, Ridmik) left the caret off screen.
+ */
+@Composable
+private fun PlainField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    placeholder: String,
+    textStyle: TextStyle,
+    modifier: Modifier = Modifier,
+    textAlpha: Float = 1f,
+    singleLine: Boolean = false,
+    imeAction: ImeAction = ImeAction.Default,
+    onImeAction: (() -> Unit)? = null
+) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val caretInView = remember { BringIntoViewRequester() }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var focused by remember { mutableStateOf(false) }
+    if (!singleLine) {
+        LaunchedEffect(value.selection, focused) {
+            val l = layout
+            // after typing, this layout is still the old text: the field scrolls to the caret itself once the new one is laid out
+            if (!focused || l == null || l.layoutInput.text.text != value.text) return@LaunchedEffect
+            val caret = l.getCursorRect(value.selection.end)
+            // a line above and below the caret as well, so it isn't left at the very edge of the screen
+            caretInView.bringIntoView(Rect(caret.left, caret.top - caret.height, caret.right, caret.bottom + caret.height))
+        }
+    }
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        textStyle = textStyle.copy(color = onSurface.copy(alpha = textAlpha)),
+        cursorBrush = SolidColor(ClaudeTerracotta),
+        singleLine = singleLine,
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = imeAction),
+        keyboardActions = KeyboardActions(onNext = { onImeAction?.invoke() ?: defaultKeyboardAction(ImeAction.Next) }),
+        onTextLayout = { layout = it },
+        modifier = modifier.bringIntoViewRequester(caretInView).onFocusChanged { focused = it.isFocused },
+        decorationBox = { inner ->
+            Box {
+                if (value.text.isEmpty()) Text(placeholder, style = textStyle.copy(color = onSurface.copy(alpha = 0.35f), textDecoration = null))
+                inner()
+            }
+        }
+    )
+}
+
 private fun relativeTime(millis: Long): String {
     val now = System.currentTimeMillis()
-    if (now - millis < DateUtils.MINUTE_IN_MILLIS) return "just now"
+    if (now - millis < DateUtils.MINUTE_IN_MILLIS) return L.common.justNow
     return DateUtils.getRelativeTimeSpanString(millis, now, DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString()
 }
