@@ -7,11 +7,16 @@ import android.system.OsConstants
 import android.util.Log
 import com.example.gemini.BuildConfig
 import com.example.gemini.data.local.LocalEnvironmentManager
+import com.example.gemini.data.local.StorageSpace
+import com.example.gemini.data.local.TermuxRelocation
+import com.example.gemini.data.local.chroot.ChrootInstall
+import com.example.gemini.data.local.chroot.ChrootSetup
 import com.example.gemini.ui.browser.BrowserExtensionManager
 import com.example.gemini.ui.browser.PluginRepositories
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,11 +31,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
+import com.example.gemini.i18n.L
 
 /**
  * Settings → REA: sets up REA (Reverse Engineer Anything, github.com/morluto/rea), an MCP server that lets agents
  * take apart APKs, Flutter and React Native apps and native code, in a proot-distro Ubuntu container of the
- * terminal (com.termux builds only).
+ * terminal. When AntiGem's Ubuntu chroot is the phone's runtime, REA installs into the chroot itself instead (the same
+ * scripts, run there as root: see [ChrootSetup]), since the agents run there.
  *
  * Nothing of REA ships in the APK: the setup scripts live in the antigem_plugins repository
  * (rea/skills/rea/scripts) and are downloaded into $PREFIX/share/antigem-rea when the user asks for them. Every
@@ -50,9 +57,16 @@ object ReaManager {
     const val CONTAINER = "ubuntu"
     const val REA_HOMEPAGE = "https://github.com/morluto/rea"
 
-    private const val TERMUX = "/data/data/com.termux/files"
-    const val LAUNCHER = "$TERMUX/usr/bin/rea-mcp"
-    private const val JAVA_BIN = "usr/lib/jvm/java-21-openjdk-arm64/bin/java"
+    private const val TERMUX = "/data/data/${BuildConfig.APPLICATION_ID}/files"
+    const val TERMUX_LAUNCHER = "$TERMUX/usr/bin/rea-mcp"
+    /** rea-mcp in the Ubuntu chroot (the setup's launcher step writes it). */
+    const val CHROOT_LAUNCHER = "/usr/local/bin/rea-mcp"
+    /** The command agents start: rea-mcp of the runtime the agents run in (AntiGem's environment or the Ubuntu chroot). */
+    val LAUNCHER: String get() = if (ChrootSetup.install() != null) CHROOT_LAUNCHER else TERMUX_LAUNCHER
+    /** Where the setup files go in the Ubuntu chroot. */
+    private val CHROOT_SHARE = ChrootSetup.shareDir("antigem-rea")
+    // Ubuntu names the JDK folder after the CPU: -arm64 on phones, -amd64 in the x86_64 build
+    private val JAVA_BIN = "usr/lib/jvm/java-21-openjdk-${if (BuildConfig.TARGET_ABI == "x86_64") "amd64" else "arm64"}/bin/java"
     private const val JADX_JAR = "root/tools/jadx-headless-mcp-0.7.1-all.jar"
     private const val GROUPS_ENV = "REA_GROUPS"
     private const val MODE_ENV = "REA_MODE"
@@ -69,24 +83,33 @@ object ReaManager {
      */
     enum class Component(
         val step: String,
-        val label: String,
-        val description: String,
+        private val termuxLabel: () -> String,
+        private val termuxDescription: () -> String,
         val size: String,
-        val required: Boolean
+        val required: Boolean,
+        /** The wording when REA installs into the Ubuntu chroot (null: the same). */
+        private val chrootLabel: (() -> String)? = null,
+        private val chrootDescription: (() -> String)? = null
     ) {
-        CONTAINER("container", "Ubuntu container", "proot-distro and an Ubuntu 24.04 container REA runs in. Other Linux tools you install can use it too (proot-distro login ubuntu).", "≈150 MB", true),
-        BASE("base", "Base tools", "curl, Python, git, unzip and procps in Ubuntu. Node, JADX, apktool and hermes-dec need them.", "≈60 MB", true),
-        JAVA("java", "Java 21", "OpenJDK 21, headless (no desktop libraries). JADX and apktool run on it.", "≈290 MB", true),
-        NODE("node", "Node.js 24", "Installed with nvm, not apt (Ubuntu's Node is too old and pulls many packages). REA runs on it.", "≈240 MB", true),
-        REA("rea", "REA", "REA's command and MCP server (npm rea-agents). Install again to update it.", "≈60 MB", true),
-        JADX("jadx", "JADX decompiler", "jadx-headless-mcp: Java/Kotlin source of an APK's classes and methods, manifest and references.", "≈45 MB", true),
-        APKTOOL("apktool", "apktool", "The official apktool jar (latest): manifest, resources and strings.", "≈16 MB", true),
-        LAUNCHER("launcher", "MCP launcher", "rea-mcp (the command agents start), rea-shell and the tool group filter.", "<1 MB", true),
-        NATIVE("native", "Native code tools", "objdump and rizin for .so libraries (libapp.so, libflutter.so, JNI code).", "≈40 MB", false),
-        ADB("adb", "adb", "adb in the terminal for REA's phone tools (installed apps, logcat, screenshots). Connect it in ADB Connect.", "≈10 MB", false),
-        HERMES("hermes", "React Native (hermes-dec)", "Decompiles Hermes bytecode, the index.android.bundle of most React Native apps.", "≈40 MB", false),
-        DEBUG("debug", "Debugger (gdb)", "GDB for debugging native programs in the container.", "≈70 MB", false),
-        FIRMWARE("firmware", "Firmware (binwalk)", "binwalk to find and extract firmware images.", "≈30 MB", false);
+        CONTAINER("container", { L.rea.manager.ubuntuContainer }, { L.rea.manager.prootDistroAndAnUbuntu24 }, "≈150 MB", true,
+            { L.rea.manager.ubuntuChroot }, { L.rea.manager.thisPhonesUbuntuChrootReaInstalls }),
+        BASE("base", { L.rea.manager.baseTools }, { L.rea.manager.curlPythonGitUnzipAndProcps }, "≈60 MB", true),
+        JAVA("java", { "Java 21" }, { L.rea.manager.openjdk21HeadlessNoDesktopLibraries }, "≈290 MB", true),
+        NODE("node", { L.rea.manager.nodeJs24 }, { L.rea.manager.installedWithNvmNotAptUbuntus }, "≈240 MB", true),
+        REA("rea", { "REA" }, { L.rea.manager.reasCommandAndMcpServerNpm }, "≈60 MB", true),
+        JADX("jadx", { L.rea.manager.jadxDecompiler }, { L.rea.manager.jadxHeadlessMcpJavaKotlinSource }, "≈45 MB", true),
+        APKTOOL("apktool", { "apktool" }, { L.rea.manager.theOfficialApktoolJarLatestManifest }, "≈16 MB", true),
+        LAUNCHER("launcher", { L.rea.manager.mcpLauncher }, { L.rea.manager.reaMcpTheCommandAgentsStart }, "<1 MB", true),
+        NATIVE("native", { L.rea.manager.nativeCodeTools }, { L.rea.manager.objdumpAndRizinForSoLibraries }, "≈40 MB", false,
+            chrootDescription = { L.rea.manager.objdumpAndRizinForSoLibraries2 }),
+        ADB("adb", { "adb" }, { L.rea.manager.adbInTheTerminalForReas }, "≈10 MB", false,
+            { L.rea.manager.adbAndFastboot }, { L.rea.manager.ubuntusAdbAndFastbootForReas }),
+        HERMES("hermes", { L.rea.manager.reactNativeHermesDec }, { L.rea.manager.decompilesHermesBytecodeTheIndexAndroid }, "≈40 MB", false),
+        DEBUG("debug", { L.rea.manager.debuggerGdb }, { L.rea.manager.gdbForDebuggingNativeProgramsIn }, "≈70 MB", false),
+        FIRMWARE("firmware", { L.rea.manager.firmwareBinwalk }, { L.rea.manager.binwalkToFindAndExtractFirmware }, "≈30 MB", false);
+
+        val label: String get() = chrootLabel?.takeIf { ChrootSetup.install() != null }?.invoke() ?: termuxLabel()
+        val description: String get() = chrootDescription?.takeIf { ChrootSetup.install() != null }?.invoke() ?: termuxDescription()
 
         val needs: List<Component>
             get() = when (this) {
@@ -115,8 +138,9 @@ object ReaManager {
 
     data class State(
         val ready: Boolean = false,
-        val termuxBuild: Boolean = true,
         val bootstrapInstalled: Boolean = false,
+        /** REA lives in the Ubuntu chroot (the phone's runtime), not in a proot container of AntiGem's environment. */
+        val chroot: Boolean = false,
         val source: String = DEFAULT_SOURCE,
         /** Version of the downloaded setup files, null when not downloaded. */
         val filesVersion: String? = null,
@@ -148,7 +172,9 @@ object ReaManager {
         val defaultSelection: List<String> = emptyList(),
         val doctorLog: List<String> = emptyList(),
         val pluginInstalled: Boolean = false,
-        val pluginVersion: String? = null
+        val pluginVersion: String? = null,
+        /** Website analysis on: the "web" tool group exists and agents are told to use REA on the browser's tabs. */
+        val webEnabled: Boolean = false
     ) {
         val filesReady: Boolean get() = filesVersion != null
         val requiredDone: Boolean get() = Component.entries.filter { it.required }.all { it in installed }
@@ -229,7 +255,7 @@ object ReaManager {
     fun init(context: Context) {
         if (::appContext.isInitialized) return
         appContext = context.applicationContext
-        _state.update { it.copy(source = prefs.getString("source", null) ?: DEFAULT_SOURCE) }
+        _state.update { it.copy(source = prefs.getString("source", null) ?: DEFAULT_SOURCE, webEnabled = prefs.getBoolean(WEB_PREF, false)) }
     }
 
     fun clearMessage() = _state.update { it.copy(message = null, isError = false) }
@@ -238,12 +264,39 @@ object ReaManager {
 
     // ---------------- state ----------------
 
-    /** Re-reads what is installed, the setup files, tools and groups: only files, cheap enough to poll. */
-    fun refresh() = scope.launch { refreshNow() }
+    /**
+     * Re-reads what is installed, the setup files, tools and groups: only files, cheap enough to poll. In the Ubuntu
+     * chroot what is installed comes from the setup script (a root call), at most every [CHROOT_STATUS_MS] unless [force].
+     */
+    fun refresh(force: Boolean = false) = scope.launch { refreshNow(force) }
 
-    private fun refreshNow() {
+    private const val CHROOT_STATUS_MS = 15_000L
+    @Volatile private var chrootStatus: Map<String, String>? = null
+    @Volatile private var chrootStatusFor: String? = null
+    @Volatile private var chrootStatusAt = 0L
+
+    /** The setup script's `status` in [install] (cached); null when the chroot can't be asked. */
+    private suspend fun chrootStatus(install: ChrootInstall, force: Boolean): Map<String, String>? {
+        val fresh = chrootStatusFor == install.path && System.currentTimeMillis() - chrootStatusAt < CHROOT_STATUS_MS
+        if (!force && fresh) return chrootStatus
+        var status = ChrootSetup.status(appContext, install, CHROOT_SHARE, "rea-setup.sh")
+        // the setup files were downloaded but never copied into this chroot (e.g. it became the runtime later)
+        if (status == null && File(shareDir, "rea-setup.sh").exists() && copyFilesToChroot(install)) {
+            status = ChrootSetup.status(appContext, install, CHROOT_SHARE, "rea-setup.sh")
+        }
+        chrootStatus = status
+        chrootStatusFor = install.path
+        chrootStatusAt = System.currentTimeMillis()
+        return status
+    }
+
+    private suspend fun refreshNow(force: Boolean = false) {
         val ctx = appContext
-        val termux = LocalEnvironmentManager.isTermuxPackage(ctx)
+        val chroot = ChrootSetup.install()
+        if (chroot != null) {
+            refreshChroot(chroot, force)
+            return
+        }
         val root = rootfs()
         val bin = File(prefix, "bin")
         val installed = buildSet {
@@ -268,14 +321,19 @@ object ReaManager {
         val filesVersion = runCatching { JSONObject(File(shareDir, "files.json").readText()).optString("version").ifBlank { null } }
             .getOrNull()?.takeIf { File(shareDir, "rea-setup.sh").exists() }
         val (defaults, selection) = readDefaultGroups()
-        val groups = readGroups(defaults)
         val catalog = readTools()
+        var groups = readGroups(defaults)
+        // Website analysis keeps its group (it comes back after "Reset all groups"; turning the setting off removes it)
+        if (_state.value.webEnabled && groups.isNotEmpty() && groups.none { it.id == WEB_GROUP }) {
+            groups = groups + webGroup(catalog.tools)
+            runCatching { writeGroups(groups, removedBuiltins()) }
+        }
         val plugin = BrowserExtensionManager.instance.extensions.firstOrNull { it.id == PLUGIN_ID }
         _state.update {
             it.copy(
                 ready = true,
-                termuxBuild = termux,
                 bootstrapInstalled = LocalEnvironmentManager.isInstalled(ctx),
+                chroot = false,
                 filesVersion = filesVersion,
                 filesUpdate = it.filesUpdate?.takeIf { v -> v != filesVersion },
                 installed = installed,
@@ -296,6 +354,97 @@ object ReaManager {
                 pluginVersion = plugin?.version
             )
         }
+    }
+
+    /** [refreshNow] for the Ubuntu chroot: what is installed from the setup script, the rest from the app's own files. */
+    private suspend fun refreshChroot(install: ChrootInstall, force: Boolean) {
+        val status = chrootStatus(install, force).orEmpty()
+        val installed = buildSet {
+            // the chroot is the container
+            add(Component.CONTAINER)
+            Component.entries.filter { status[it.step] == "yes" }.forEach { add(it) }
+        }
+        val filesVersion = runCatching { JSONObject(File(shareDir, "files.json").readText()).optString("version").ifBlank { null } }
+            .getOrNull()?.takeIf { File(shareDir, "rea-setup.sh").exists() }
+        val (defaults, selection) = readDefaultGroups()
+        val catalog = readTools()
+        var groups = readGroups(defaults)
+        if (_state.value.webEnabled && groups.isNotEmpty() && groups.none { it.id == WEB_GROUP }) {
+            groups = groups + webGroup(catalog.tools)
+            runCatching { writeGroups(groups, removedBuiltins()) }
+        }
+        val plugin = BrowserExtensionManager.instance.extensions.firstOrNull { it.id == PLUGIN_ID }
+        _state.update {
+            it.copy(
+                ready = true,
+                bootstrapInstalled = true,
+                chroot = true,
+                filesVersion = filesVersion,
+                filesUpdate = it.filesUpdate?.takeIf { v -> v != filesVersion },
+                installed = installed,
+                reaVersion = status["rea_version"]?.ifBlank { null },
+                nodeVersion = status["node_version"]?.ifBlank { null },
+                containerName = status["os"]?.ifBlank { null } ?: install.os,
+                tools = catalog.tools,
+                toolsServer = catalog.server,
+                instructionsBytes = catalog.instructionsBytes,
+                lazyBytes = catalog.lazyBytes,
+                groups = groups,
+                defaultGroups = defaults,
+                defaultSelection = selection,
+                pluginInstalled = plugin != null,
+                pluginVersion = plugin?.version
+            )
+        }
+    }
+
+    /**
+     * Whether the downloaded setup files know the Ubuntu chroot (1.1.0 and newer list rea-mcp-chroot). Older ones only know
+     * Termux and would run their Termux steps inside the chroot.
+     */
+    private fun filesSupportChroot(): Boolean = runCatching {
+        val arr = JSONObject(File(shareDir, "files.json").readText()).optJSONArray("files")
+        (0 until (arr?.length() ?: 0)).any { arr!!.getString(it) == "rea-mcp-chroot" }
+    }.getOrDefault(false)
+
+    private fun chrootFilesError(): String {
+        val v = runCatching { JSONObject(File(shareDir, "files.json").readText()).optString("version") }.getOrNull()?.ifBlank { null }
+        return L.rea.manager.theseSetupFilesVersionAreFrom(v ?: L.rea.manager.unknownVersion)
+    }
+
+    /** The downloaded setup files, copied into the chroot's [CHROOT_SHARE] (they run there). */
+    private suspend fun copyFilesToChroot(install: ChrootInstall): Boolean {
+        if (!filesSupportChroot()) return false
+        val names = runCatching {
+            val arr = JSONObject(File(shareDir, "files.json").readText()).optJSONArray("files")
+            (0 until (arr?.length() ?: 0)).map { arr!!.getString(it) }
+        }.getOrDefault(emptyList()).filter { Regex("[A-Za-z0-9._-]+").matches(it) } + "files.json"
+        val r = ChrootSetup.copyIn(appContext, install, shareDir, names.distinct(), CHROOT_SHARE) { name ->
+            !name.endsWith(".json") && !name.endsWith(".mjs")
+        }
+        if (!r.ok) Log.w(TAG, "copying the setup files into the chroot: ${r.message()}")
+        return r.ok
+    }
+
+    /** The app's tool groups (its own copy is the one the pages edit) into the chroot user's ~/.config/antigem/rea. */
+    private suspend fun pushGroupsToChroot(install: ChrootInstall) {
+        val bytes = runCatching { groupsFile.readBytes() }.getOrNull() ?: return
+        val r = ChrootSetup.asUser(appContext, install,
+            "mkdir -p ~/.config/antigem/rea && cat > ~/.config/antigem/rea/groups.json.part && mv -f ~/.config/antigem/rea/groups.json.part ~/.config/antigem/rea/groups.json",
+            stdin = bytes)
+        if (!r.ok) Log.w(TAG, "copying the tool groups into the chroot: ${r.message()}")
+    }
+
+    /** REA's tool list, written in the chroot by the setup's tools step, into the app's copy (the pages read it). */
+    private suspend fun pullToolsFromChroot(install: ChrootInstall) {
+        val r = ChrootSetup.asUser(appContext, install, "cat ~/.config/antigem/rea/tools.json", timeoutMs = 60_000L)
+        if (!r.ok || r.out.isEmpty()) return
+        val text = r.out.joinToString("\n")
+        if (runCatching { JSONObject(text) }.isFailure) return
+        confDir.mkdirs()
+        val partial = File(confDir, "tools.json.part")
+        partial.writeText(text)
+        if (!partial.renameTo(toolsFile)) { partial.copyTo(toolsFile, overwrite = true); partial.delete() }
     }
 
     // ---------------- setup files (downloaded, never bundled) ----------------
@@ -319,18 +468,18 @@ object ReaManager {
     fun downloadSetupFiles() = runTask("files") { fetchSetupFiles() }
 
     private suspend fun fetchSetupFiles() {
-        _state.update { it.copy(progress = "Reading the file list…") }
+        _state.update { it.copy(progress = L.rea.manager.readingTheFileList) }
         val listUrl = rawUrl("files.json")
-        appendLog("Source: ${_state.value.source}")
+        appendLog(L.rea.manager.sourceSource(_state.value.source))
         appendLog(listUrl)
         val index = JSONObject(httpGet(listUrl))
-        val version = index.optString("version").ifBlank { throw IllegalStateException("files.json has no version") }
-        val files = index.optJSONArray("files") ?: throw IllegalStateException("files.json lists no files")
+        val version = index.optString("version").ifBlank { throw IllegalStateException(L.rea.manager.filesJsonHasNoVersion) }
+        val files = index.optJSONArray("files") ?: throw IllegalStateException(L.rea.manager.filesJsonListsNoFiles)
         shareDir.mkdirs()
         for (i in 0 until files.length()) {
             val name = files.getString(i)
             require(Regex("[A-Za-z0-9._-]+").matches(name)) { "Bad file name in files.json: $name" }
-            _state.update { it.copy(progress = "Downloading $name (${i + 1}/${files.length()})…") }
+            _state.update { it.copy(progress = L.rea.manager.downloadingNameIndexTotal(name, i + 1, files.length())) }
             val target = File(shareDir, name)
             val partial = File(shareDir, "$name.part")
             partial.writeText(httpGet(rawUrl(name)))
@@ -339,11 +488,17 @@ object ReaManager {
             appendLog("✓ $name")
         }
         File(shareDir, "files.json").writeText(index.toString(1))
-        appendLog("✓ Setup files $version in ${shareDir.absolutePath}")
+        relocateSetupFiles()
+        appendLog(L.rea.manager.setupFilesVersionInAbsolutepath(version, shareDir.absolutePath))
+        ChrootSetup.install()?.let { install ->
+            if (!filesSupportChroot()) throw IllegalStateException(chrootFilesError())
+            if (!copyFilesToChroot(install)) throw IllegalStateException(L.rea.manager.couldNotCopyTheSetupFiles)
+            appendLog(L.rea.manager.copiedIntoTheUbuntuChrootChroot(CHROOT_SHARE))
+        }
         _state.update { it.copy(filesUpdate = null) }
         // A changed filter or launcher only reaches agents through the launcher step
         if (Component.LAUNCHER in _state.value.installed) {
-            shellTask("Updating the launcher…", "launcher", 600)
+            shellTask(L.rea.manager.updatingTheLauncher, "launcher", 600)
         }
     }
 
@@ -352,7 +507,9 @@ object ReaManager {
         runCatching { JSONObject(httpGet(rawUrl("files.json"))).optString("version") }
             .onSuccess { remote ->
                 val local = _state.value.filesVersion
-                _state.update { it.copy(filesUpdate = remote.takeIf { v -> v.isNotBlank() && v != local }) }
+                // only a newer version is an update (a repository behind the downloaded files is no downgrade offer)
+                val newer = remote.isNotBlank() && (local == null || (com.example.gemini.ui.browser.PluginVersions.compare(remote, local) ?: 0) > 0)
+                _state.update { it.copy(filesUpdate = remote.takeIf { newer }) }
             }
             .onFailure { Log.w(TAG, "update check failed: ${it.message}") }
     }
@@ -378,46 +535,59 @@ object ReaManager {
     /** Installs [components] (already planned) one step after another, stopping at the first failure. */
     fun installAll(components: List<Component>, single: Component? = null) {
         if (components.isEmpty()) {
-            report("Everything selected is already installed.")
+            report(L.rea.manager.everythingSelectedIsAlreadyInstalled)
             return
         }
         runTask(single?.step ?: "batch") {
+            // Enough storage for every part (their listed sizes, plus room for apt / npm while they install)?
+            val chroot = ChrootSetup.install()
+            val needed = components.sumOf { if (chroot != null && it == Component.CONTAINER) 0L else StorageSpace.parseSize(it.size) }
+            StorageSpace.shortage(chroot?.let { File(it.path) } ?: appContext.filesDir, needed + StorageSpace.MARGIN_BYTES,
+                if (components.size == 1) components[0].label else L.rea.manager.theseComponentscountParts(components.size))?.let {
+                report(it, isError = true)
+                return@runTask
+            }
             if (!_state.value.filesReady) fetchSetupFiles()
             _state.update { it.copy(batch = components, batchIndex = 0) }
             for ((i, c) in components.withIndex()) {
                 _state.update { it.copy(installing = c, batchIndex = i) }
-                val label = if (components.size > 1) "Step ${i + 1} of ${components.size} · ${c.label}" else c.label
+                val label = if (components.size > 1) L.rea.manager.stepValueOfComponentscountLabel(i + 1, components.size, c.label) else c.label
                 if (!shellTask("$label…", c.step, 3600)) return@runTask
-                refreshNow()
+                refreshNow(force = true)
             }
-            report(if (components.size == 1) "${components[0].label} installed." else "Installed ${components.size} parts.")
+            report(if (components.size == 1) L.rea.manager.labelInstalled(components[0].label) else L.rea.manager.installedComponentscountParts(components.size))
         }
     }
 
     /** Stops the running step: kills the setup script and everything it started (apt, proot, downloads). */
     fun stop() {
-        val pid = runCatching { pidFile.readText().trim().toInt() }.getOrNull()
-        if (pid != null) scope.launch { killTree(pid) }
+        val chroot = ChrootSetup.install()
+        if (chroot != null) {
+            scope.launch { ChrootSetup.stopScript(appContext, chroot, CHROOT_SHARE) }
+        } else {
+            val pid = runCatching { pidFile.readText().trim().toInt() }.getOrNull()
+            if (pid != null) scope.launch { killTree(pid) }
+        }
         job?.cancel()
-        report("Stopped. Run the step again to finish it: it picks up where it left off.", isError = true)
+        report(L.rea.manager.stoppedRunTheStepAgainTo, isError = true)
     }
 
     fun runDoctor() = runTask("doctor") {
         _state.update { it.copy(doctorLog = emptyList()) }
-        shellTask("Running rea doctor…", "doctor", 300)
+        shellTask(L.rea.manager.runningReaDoctor, "doctor", 300)
         _state.update { it.copy(doctorLog = it.log) }
     }
 
     fun refreshTools() = runTask("tools") {
-        if (shellTask("Reading REA's tool list…", "tools", 300)) report("Tool list updated: ${_state.value.tools.size} tools.")
+        if (shellTask(L.rea.manager.readingReasToolList, "tools", 300)) report(L.rea.manager.toolListUpdatedToolscountTools(_state.value.tools.size))
     }
 
     fun uninstallRea() = runTask("uninstall") {
-        if (shellTask("Removing REA…", "uninstall", 600)) report("REA removed. The Ubuntu container, Java and Node.js stay.")
+        if (shellTask(L.rea.manager.removingRea, "uninstall", 600)) report(L.rea.manager.reaRemovedTheUbuntuContainerJava)
     }
 
     fun removeContainer() = runTask("remove-container") {
-        if (shellTask("Deleting the Ubuntu container…", "remove-container", 600)) report("The Ubuntu container was deleted.")
+        if (shellTask(L.rea.manager.deletingTheUbuntuContainer, "remove-container", 600)) report(L.rea.manager.theUbuntuContainerWasDeleted)
     }
 
     // ---------------- tools & groups ----------------
@@ -504,11 +674,13 @@ object ReaManager {
         val partial = File(confDir, "groups.json.part")
         partial.writeText(json.toString(1))
         if (!partial.renameTo(groupsFile)) { partial.copyTo(groupsFile, overwrite = true); partial.delete() }
+        // rea-mcp in the Ubuntu chroot reads the user's own copy
+        ChrootSetup.install()?.let { install -> scope.launch { pushGroupsToChroot(install) } }
     }
 
     private fun saveGroups(groups: List<Group>, removed: List<String> = removedBuiltins()) {
         _state.update { it.copy(groups = groups) }
-        scope.launch { runCatching { writeGroups(groups, removed) }.onFailure { report("Could not save the tool groups: ${it.message}", isError = true) } }
+        scope.launch { runCatching { writeGroups(groups, removed) }.onFailure { report(L.rea.manager.couldNotSaveTheToolGroups(it.message), isError = true) } }
     }
 
     /** A new, empty group; returns its id. */
@@ -549,10 +721,71 @@ object ReaManager {
     fun resetAllGroups() {
         val defaults = _state.value.defaultGroups
         if (defaults.isEmpty()) {
-            report("Download the setup files first: they carry the default groups.", isError = true)
+            report(L.rea.manager.downloadTheSetupFilesFirstThey, isError = true)
             return
         }
         saveGroups(defaults, emptyList())
+    }
+
+    // ---------------- websites (the browser's tabs through ReaWebBridge) ----------------
+
+    const val WEB_GROUP = "web"
+    private const val WEB_PREF = "web_enabled"
+
+    /** REA's tools for live pages in a Chromium browser and for what they capture (REA 6.8). */
+    private val WEB_TOOLS = listOf(
+        "list_browser_targets", "inspect_web_page", "analyze_web_bundle", "capture_web_screenshot", "observe_web_session",
+        "inspect_web_event_listeners", "discover_webmcp_tools", "observe_web_execution", "compare_web_captures",
+        "compare_web_screenshots", "export_web_scripts", "trace_web_module_imports", "trace_web_source_location",
+        "inspect_web_network_capture"
+    )
+
+    /** What agents read about the group (rea_tools {group: "web"}): the endpoint and how to work with the browser. */
+    private val WEB_DESCRIPTION =
+        "Websites open in AntiGem's browser, through its DevTools endpoint http://127.0.0.1:${ReaWebBridge.DEFAULT_PORT} " +
+            "(the cdp_endpoint argument). Do the analysis with these tools first, screenshots included " +
+            "(capture_web_screenshot works for background tabs too): list_browser_targets finds the tab's target id, then " +
+            "inspect_web_page (DOM, accessibility, scripts, resources, network, console, storage), analyze_web_bundle " +
+            "(routes, API endpoints, libraries), observe_web_session while the page is used. Open pages, click and type with " +
+            "AntiGem's browser MCP tools (REA only observes), and use them for anything these tools could not do. If the " +
+            "endpoint is unreachable, ask the user to turn on Settings → REA → Websites → Browser connection."
+
+    private fun webGroup(catalog: List<Tool>): Group {
+        val known = catalog.map { it.name }.toSet()
+        val tools = if (known.isEmpty()) WEB_TOOLS else WEB_TOOLS.filter { it in known }
+        return Group(WEB_GROUP, "Websites", WEB_DESCRIPTION, builtin = false, tools = tools)
+    }
+
+    /** Turns website analysis on (adds the "web" tool group) or off (removes it and stops the browser connection). */
+    fun setWebEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(WEB_PREF, enabled).apply()
+        _state.update { it.copy(webEnabled = enabled) }
+        val groups = _state.value.groups
+        if (enabled) {
+            val web = webGroup(_state.value.tools)
+            saveGroups(if (groups.any { it.id == WEB_GROUP }) groups.map { if (it.id == WEB_GROUP) web else it } else groups + web)
+        } else {
+            ReaWebBridge.stop()
+            if (groups.any { it.id == WEB_GROUP }) saveGroups(groups.filter { it.id != WEB_GROUP })
+        }
+    }
+
+    /** Starts or stops the loopback DevTools bridge REA connects to. */
+    fun setBrowserConnection(context: Context, on: Boolean) {
+        if (on) ReaWebBridge.start(context) else ReaWebBridge.stop()
+    }
+
+    /**
+     * A sentence for the browser MCP's instructions while website analysis is on: analyze with REA first. Reads the
+     * setting directly, so it works before the REA page was opened.
+     */
+    fun browserMcpNote(context: Context): String {
+        val on = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(WEB_PREF, false)
+        if (!on) return ""
+        return " Website analysis with REA is on: to analyze a website (structure, scripts, network, technologies, " +
+            "accessibility, screenshots…), open it with these tools, then use REA's website tools (tool group \"web\", " +
+            "DevTools endpoint http://127.0.0.1:${ReaWebBridge.DEFAULT_PORT}) for the analysis, screenshots included. " +
+            "Use these browser tools to open pages and act on them, and for anything REA could not do."
     }
 
     // ---------------- MCP server settings (agent-neutral) ----------------
@@ -601,7 +834,7 @@ object ReaManager {
     fun installSkillPlugin() = runTask("plugin") {
         PluginRepositories.init(appContext)
         val wanted = PluginRepositories.parse(_state.value.source)
-        _state.update { it.copy(progress = "Adding ${wanted.label} to the plugin repositories…") }
+        _state.update { it.copy(progress = L.rea.manager.addingLabelToThePluginRepositories(wanted.label)) }
         val repo = PluginRepositories.repos.firstOrNull { it.slug.equals(wanted.slug, ignoreCase = true) }
             ?: withContext(Dispatchers.Main) {
                 // The default branch is what Custom AntiGem Plugins shows; "main" is spelled out only when asked
@@ -609,25 +842,25 @@ object ReaManager {
                 PluginRepositories.add(plain)
                 plain
             }
-        appendLog("Repository: ${repo.label}")
-        _state.update { it.copy(progress = "Reading ${repo.label}…") }
+        appendLog(L.rea.manager.repositoryLabel(repo.label))
+        _state.update { it.copy(progress = L.rea.manager.readingRepo(repo.label)) }
         PluginRepositories.refresh(repo)
         val listing = PluginRepositories.listings[repo.label]
-            ?: throw IllegalStateException(PluginRepositories.errors[repo.label] ?: "Could not read ${repo.label}")
+            ?: throw IllegalStateException(PluginRepositories.errors[repo.label] ?: L.rea.manager.couldNotReadRepo(repo.label))
         val plugin = listing.plugins.firstOrNull { it.id == PLUGIN_ID || it.path.substringAfterLast('/') == PLUGIN_ID }
-            ?: throw IllegalStateException("${repo.label} has no REA plugin")
+            ?: throw IllegalStateException(L.rea.manager.repoHasNoReaPlugin(repo.label))
         val existing = PluginRepositories.installedFor(repo, plugin)
-        _state.update { it.copy(progress = "Installing the REA skill ${plugin.version}…") }
+        _state.update { it.copy(progress = L.rea.manager.installingTheReaSkillVersion(plugin.version)) }
         val result = PluginRepositories.install(repo, plugin, existing?.folderName ?: PLUGIN_ID, existing?.id)
         appendLog("✓ ${result.name} ${result.version} in ${result.dirPath}")
-        report("REA skill ${result.version} installed. Connect it in your agent's MCP settings (Custom Plugin MCP → REA), or pick it in chat with /plu:.")
+        report(L.rea.manager.reaSkillVersionInstalledConnectIt(result.version))
     }
 
     // ---------------- helpers ----------------
 
     private fun runTask(task: String, block: suspend () -> Unit) {
         if (job?.isActive == true) {
-            report("Something is already running. Wait for it, or tap Stop.", isError = true)
+            report(L.rea.manager.somethingIsAlreadyRunningWaitFor, isError = true)
             return
         }
         job = scope.launch {
@@ -643,20 +876,33 @@ object ReaManager {
             } catch (e: Exception) {
                 Log.e(TAG, "$task failed", e)
                 appendLog("✗ ${e.message ?: e.javaClass.simpleName}")
-                report(e.message ?: "Failed", isError = true)
+                report(e.message ?: L.rea.manager.failed, isError = true)
             } finally {
                 releaseWakeLock()
                 pidFile.delete()
-                refreshNow()
+                // also after Stop (the job is cancelled; reading the chroot's status still has to happen)
+                withContext(NonCancellable) { runCatching { refreshNow(force = true) } }
                 _state.update { it.copy(task = null, progress = null, installing = null) }
             }
         }
     }
 
+    /**
+     * The setup files are written for com.termux (/data/data/com.termux/files/…). In a build whose package differs
+     * they are rewritten for this app's package, like Termux packages, else the scripts look for the
+     * container and their tools in com.termux's folder. Runs before every step too, for files downloaded before.
+     */
+    private fun relocateSetupFiles() {
+        runCatching { TermuxRelocation.relocateIfNeeded(appContext, shareDir) }
+            .onFailure { Log.w(TAG, "relocating the setup files: ${it.message}") }
+    }
+
     /** Runs `rea-setup.sh <step>`, streaming its output into the log; false (and an error message) on failure. */
     private suspend fun shellTask(progress: String, step: String, timeoutSeconds: Long): Boolean {
         val script = File(shareDir, "rea-setup.sh")
-        if (!script.exists()) throw IllegalStateException("The setup files are missing. Tap Get setup files first.")
+        if (!script.exists()) throw IllegalStateException(L.rea.manager.theSetupFilesAreMissingTap)
+        ChrootSetup.install()?.let { return chrootTask(it, progress, step, timeoutSeconds) }
+        relocateSetupFiles()
         _state.update { it.copy(progress = progress) }
         appendLog("$ bash rea-setup.sh $step")
         // $$ is this shell, and exec keeps its PID for the script: Stop kills that process tree
@@ -667,9 +913,34 @@ object ReaManager {
             onOutputLine = { line -> if (line.isNotBlank()) appendLog(line.trimEnd()) }
         )
         if (result.exitCode != 0) {
-            val last = _state.value.log.lastOrNull { it.startsWith("✗") }?.removePrefix("✗ ")
-            report(last ?: "The $step step failed (exit ${result.exitCode}). Check the log, then run it again.", isError = true)
+            val last = if (_state.value.log.takeLast(40).any(StorageSpace::isOutOfSpaceLine)) StorageSpace.outOfSpaceMessage()
+                else _state.value.log.lastOrNull { it.startsWith("✗") }?.removePrefix("✗ ")
+            report(last ?: L.rea.manager.theStepStepFailedExitExitcode(step, result.exitCode), isError = true)
             return false
+        }
+        return true
+    }
+
+    /**
+     * [shellTask] in the Ubuntu chroot: the same `rea-setup.sh <step>`, run inside the chroot as root (the setup files
+     * copied in first). Afterwards the tool list comes back to the app and the app's tool groups go to the user.
+     */
+    private suspend fun chrootTask(install: ChrootInstall, progress: String, step: String, timeoutSeconds: Long): Boolean {
+        if (!filesSupportChroot()) throw IllegalStateException(chrootFilesError())
+        if (!copyFilesToChroot(install)) throw IllegalStateException(L.rea.manager.couldNotCopyTheSetupFiles2)
+        _state.update { it.copy(progress = progress) }
+        appendLog("$ bash rea-setup.sh $step   (in the Ubuntu chroot, as root)")
+        val r = ChrootSetup.runScript(appContext, install, CHROOT_SHARE, "rea-setup.sh", step.split(' ').filter { it.isNotBlank() },
+            timeoutSeconds * 1000) { line -> if (line.isNotBlank()) appendLog(line.trimEnd()) }
+        if (!r.ok) {
+            val last = if (_state.value.log.takeLast(40).any(StorageSpace::isOutOfSpaceLine)) StorageSpace.outOfSpaceMessage()
+                else _state.value.log.lastOrNull { it.startsWith("✗") }?.removePrefix("✗ ")
+            report(last ?: L.rea.manager.theStepStepFailedExitExitcode(step, r.exitCode), isError = true)
+            return false
+        }
+        if (step in setOf("launcher", "rea", "tools")) {
+            pullToolsFromChroot(install)
+            if (groupsFile.exists()) pushGroupsToChroot(install)
         }
         return true
     }
@@ -715,9 +986,9 @@ object ReaManager {
     private suspend fun httpGet(url: String): String = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).header("User-Agent", "AntiGem/${BuildConfig.VERSION_NAME}").build()
         http.newCall(request).execute().use { response ->
-            if (response.code == 404) throw IllegalStateException("Not found: $url (is the repository pushed and the source right?)")
-            if (!response.isSuccessful) throw IllegalStateException("Download failed (HTTP ${response.code}): $url")
-            response.body?.string() ?: throw IllegalStateException("Empty response: $url")
+            if (response.code == 404) throw IllegalStateException(L.rea.manager.notFoundUrlIsTheRepository(url))
+            if (!response.isSuccessful) throw IllegalStateException(L.rea.manager.downloadFailedHttpCodeUrl(response.code, url))
+            response.body?.string() ?: throw IllegalStateException(L.rea.manager.emptyResponseUrl(url))
         }
     }
 }
