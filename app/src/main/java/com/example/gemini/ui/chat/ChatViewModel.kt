@@ -21,6 +21,8 @@ import com.example.gemini.domain.model.ModelQuota
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -33,6 +35,7 @@ import kotlinx.serialization.encodeToString
 import android.util.Log
 import org.json.JSONObject
 import java.util.UUID
+import com.example.gemini.i18n.L
 
 data class PendingToolApproval(
     val toolCall: com.example.gemini.domain.model.ToolCall,
@@ -173,15 +176,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             ?: AgentKind.AGY
 
     private fun claudeNotSupported(action: String) {
-        com.example.gemini.ui.components.AppToastHelper.showToast("$action is not available in Claude chats yet", com.example.gemini.ui.components.ChatToastType.INFO)
+        com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.actionIsNotAvailableInClaude(action), com.example.gemini.ui.components.ChatToastType.INFO)
     }
 
     private fun openCodeNotSupported(action: String) {
-        com.example.gemini.ui.components.AppToastHelper.showToast("$action is not available in OpenCode chats yet", com.example.gemini.ui.components.ChatToastType.INFO)
+        com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.actionIsNotAvailableInOpencode(action), com.example.gemini.ui.components.ChatToastType.INFO)
     }
 
     private fun codexNotSupported(action: String) {
-        com.example.gemini.ui.components.AppToastHelper.showToast("$action is not available in Codex chats yet", com.example.gemini.ui.components.ChatToastType.INFO)
+        com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.actionIsNotAvailableInCodex(action), com.example.gemini.ui.components.ChatToastType.INFO)
     }
 
     fun setNewChatAgent(agent: AgentKind) {
@@ -234,7 +237,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             when {
                 left <= 0 -> "now"
                 left >= 48 * 3_600_000L -> "${left / 86_400_000L}d"
-                left >= 3_600_000L -> "${left / 3_600_000L}h ${(left % 3_600_000L) / 60_000L}m"
+                left >= 3_600_000L -> L.chat.viewModel.valueHValue2M(left / 3_600_000L, (left % 3_600_000L) / 60_000L)
                 else -> "${left / 60_000L}m"
             }
         }
@@ -309,36 +312,36 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     ) { (agyChats, instances), (claudeTurn, current), claudeChats, jarvis, tasks ->
         fun names(titles: List<String>): String {
             val shown = titles.map { "“${it.ifBlank { "Untitled chat" }.take(40)}”" }.take(2).joinToString(", ")
-            return if (titles.size > 2) "$shown and ${titles.size - 2} more" else shown
+            return if (titles.size > 2) L.chat.viewModel.shownAndValueMore(shown, titles.size - 2) else shown
         }
         buildList {
             val agyWorking = agyChats.filter { it.isRunning }
             val agyBackground = agyChats.filter { !it.isRunning && (it.notFullyIdle || it.hasActivity) }
-            if (agyWorking.isNotEmpty()) add("Antigravity is working in ${names(agyWorking.map { it.title })}")
-            if (agyBackground.isNotEmpty()) add("Antigravity has background work in ${names(agyBackground.map { it.title })}")
+            if (agyWorking.isNotEmpty()) add(L.chat.viewModel.antigravityIsWorkingInNames(names(agyWorking.map { it.title })))
+            if (agyBackground.isNotEmpty()) add(L.chat.viewModel.antigravityHasBackgroundWorkInNames(names(agyBackground.map { it.title })))
             val listed = (agyWorking + agyBackground).map { it.id }.toSet()
             val otherInstances = instances.count { it.conversationId !in listed }
-            if (otherInstances > 0) add(if (otherInstances == 1) "An Antigravity instance is running" else "$otherInstances Antigravity instances are running")
+            if (otherInstances > 0) add(if (otherInstances == 1) L.chat.viewModel.anAntigravityInstanceIsRunning else L.chat.viewModel.otherinstancesAntigravityInstancesAre(otherInstances))
             val claudeOpen = current?.takeIf { claudeTurn && it.agent == AgentKind.CLAUDE }
-            if (claudeOpen != null) add("Claude is replying in ${names(listOf(claudeOpen.title))}")
+            if (claudeOpen != null) add(L.chat.viewModel.claudeIsReplyingInNames(names(listOf(claudeOpen.title))))
             val claudeOthers = claudeChats.filter { it.isRunning && it.id != claudeOpen?.id }
-            if (claudeOthers.isNotEmpty()) add("Claude is working in ${names(claudeOthers.map { it.title })}")
-            if (claudeTurn && claudeOpen == null && claudeOthers.isEmpty()) add("Claude is replying")
+            if (claudeOthers.isNotEmpty()) add(L.chat.viewModel.claudeIsWorkingInNames(names(claudeOthers.map { it.title })))
+            if (claudeTurn && claudeOpen == null && claudeOthers.isEmpty()) add(L.chat.viewModel.claudeIsReplying)
             val openCodeChats = openCodeBackend.conversations.value.filter { it.isRunning }
-            if (openCodeChats.isNotEmpty()) add("OpenCode is working in ${names(openCodeChats.map { it.title })}")
-            else if (openCodeBackend.isCurrentChatActivelyRunning.value) add("OpenCode is replying")
+            if (openCodeChats.isNotEmpty()) add(L.chat.viewModel.opencodeIsWorkingInNames(names(openCodeChats.map { it.title })))
+            else if (openCodeBackend.isCurrentChatActivelyRunning.value) add(L.chat.viewModel.opencodeIsReplying)
             val codexChats = codexBackend.conversations.value.filter { it.isRunning }
-            if (codexChats.isNotEmpty()) add("Codex is working in ${names(codexChats.map { it.title })}")
-            else if (codexBackend.isCurrentChatActivelyRunning.value) add("Codex is replying")
-            if (tasks) add("A Jarvis task is running")
+            if (codexChats.isNotEmpty()) add(L.chat.viewModel.codexIsWorkingInNames(names(codexChats.map { it.title })))
+            else if (codexBackend.isCurrentChatActivelyRunning.value) add(L.chat.viewModel.codexIsReplying)
+            if (tasks) add(L.chat.viewModel.aJarvisTaskIsRunning)
             if (jarvis) add(
                 when (com.example.gemini.data.jarvis.JarvisPreferences.keepScreenOn.value) {
-                    "active" -> "Jarvis is active (Jarvis setting: keep the screen on while it's active)"
-                    else -> "Jarvis is on (Jarvis setting: keep the screen on while Jarvis is on)"
+                    "active" -> L.chat.viewModel.jarvisIsActiveJarvisSettingKeep
+                    else -> L.chat.viewModel.jarvisIsOnJarvisSettingKeep
                 }
             )
         }
-    }.combine(voiceCallActive) { reasons, call -> if (call) listOf("A voice call with Antigravity is on") + reasons else reasons }
+    }.combine(voiceCallActive) { reasons, call -> if (call) listOf(L.chat.viewModel.aVoiceCallWithAntigravityIs) + reasons else reasons }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val isCurrentChatActivelyRunning = byAgent(agyBackend.isCurrentChatActivelyRunning, claudeBackend.isCurrentChatActivelyRunning, openCodeBackend.isCurrentChatActivelyRunning, codexBackend.isCurrentChatActivelyRunning)
     val isCurrentChatBackgroundActive = byAgent(agyBackend.isCurrentChatBackgroundActive, alwaysFalse, alwaysFalse, alwaysFalse)
@@ -358,6 +361,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             claudeBackend.onAppForegrounded()
             // the CLI may have been installed or signed in from a terminal meanwhile
             if (claudeAccount.state.value != com.example.gemini.data.agent.claude.ClaudeStatus.READY) claudeAccount.refreshStatus()
+            // back after a while: the login may have expired meanwhile, which `auth status` alone does not notice
+            else if (System.currentTimeMillis() - claudeAccount.usageUpdatedAt.value > 30 * 60_000L)
+                claudeAccount.refreshUsage(force = true, recheckSignIn = true)
         }
         if (isOpenCodeEnabled) openCodeBackend.onAppForegrounded()
         if (isCodexEnabled) codexBackend.onAppForegrounded()
@@ -371,6 +377,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     /** New chat with [agent] (e.g. `/clear` in a Claude chat), without changing the new-chat default. */
     fun startNewChat(agent: AgentKind) {
+        flushMemoryWait()
         when (agent) {
             AgentKind.CLAUDE -> {
                 agyBackend.detach()
@@ -398,8 +405,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
-    fun selectConversation(id: String) {
-        when (agentOf(id)) {
+    /** [agent]: the chat's agent when the caller knows it (a home-screen link: the chat list may not be loaded yet). */
+    fun selectConversation(id: String, agent: AgentKind = agentOf(id)) {
+        flushMemoryWait()
+        when (agent) {
             AgentKind.CLAUDE -> {
                 agyBackend.detach()
                 openCodeBackend.detach()
@@ -426,6 +435,102 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+    private var outsideOpenJob: Job? = null
+
+    /**
+     * A home-screen shortcut or widget asked for this chat. It opens once its agent's chats have loaded: right after a
+     * cold start they are still on their way, and opening earlier would race Antigravity's start-up chat. The link's
+     * agent is used, so a Claude chat never goes to Antigravity just because its list was not there yet.
+     */
+    fun openChatFromOutside(id: String, agent: AgentKind) {
+        if (agent !in enabledAgents.value) {
+            com.example.gemini.ui.components.AppToastHelper.showToast(
+                L.chat.viewModel.agentlabelIsTurnedOffTurnIt(com.example.gemini.data.homescreen.HomeIcons.agentLabel(agent)),
+                com.example.gemini.ui.components.ChatToastType.INFO
+            )
+            return
+        }
+        outsideOpenJob?.cancel()
+        outsideOpenJob = viewModelScope.launch {
+            if (currentConversation.value?.id == id) return@launch
+            val list = when (agent) {
+                AgentKind.AGY -> _conversations
+                AgentKind.CLAUDE -> claudeBackend.conversations
+                AgentKind.OPENCODE -> openCodeBackend.conversations
+                AgentKind.CODEX -> codexBackend.conversations
+            }
+            withTimeoutOrNull(if (agent == AgentKind.AGY) 20_000L else 8_000L) { list.first { it.isNotEmpty() } }
+            if (currentConversation.value?.id != id) selectConversation(id, agent)
+        }
+    }
+
+    /** A home-screen "New chat": with [agent] (null or turned off: the new-chat default), after the start-up chat. */
+    fun startNewChatFromOutside(agent: AgentKind?) {
+        outsideOpenJob?.cancel()
+        outsideOpenJob = viewModelScope.launch {
+            // right after a cold start Antigravity opens its start-up chat first; a new chat made before could be replaced
+            withTimeoutOrNull(4_000L) { currentConversation.first { it != null } }
+            val usable = agent?.takeIf { it in enabledAgents.value }
+            if (agent != null && usable == null) {
+                com.example.gemini.ui.components.AppToastHelper.showToast(
+                    L.chat.viewModel.agentlabelIsTurnedOffStartingA(com.example.gemini.data.homescreen.HomeIcons.agentLabel(agent)),
+                    com.example.gemini.ui.components.ChatToastType.INFO
+                )
+            }
+            if (usable == null) startNewChat() else startNewChat(usable)
+        }
+    }
+
+    /**
+     * Voice call tile / shortcut: opens the AGY chat that last had a voice call (a new AGY chat when none did) and waits
+     * until it is the chat on screen. Returns its id (null if it did not open in time).
+     */
+    suspend fun openLastCallChat(): String? {
+        val target = findLastCallChat()
+        withContext(Dispatchers.Main) {
+            when {
+                target == null -> startNewChat(AgentKind.AGY)
+                currentConversation.value?.id != target.id -> selectConversation(target.id)
+            }
+        }
+        return withTimeoutOrNull(15_000) {
+            agyBackend.currentConversation.first { c -> c != null && c.agent == AgentKind.AGY && (target == null || c.id == target.id) }
+        }?.id
+    }
+
+    /** A call started by the Voice call tile or shortcut: [openLastCallChat], then what the call button does for the chat on screen. */
+    suspend fun prepareVoiceCallInLastCallChat(): Pair<String, Int> {
+        openLastCallChat()
+        agyBackend.currentConversation.value?.title?.takeIf { it.isNotBlank() && it != "New Chat" }
+            ?.let { com.example.gemini.data.voice.AgyVoiceCall.retitle(it) }
+        return agyBackend.prepareVoiceCall()
+    }
+
+    /**
+     * The newest AGY chat (not a cloud chat) that had a voice call: the ones the app remembers first; calls from before
+     * it remembered them are found by asking the hub about the newest chats (it keeps each chat's calls).
+     */
+    private suspend fun findLastCallChat(): Conversation? {
+        val hub = AuthPreferences.currentHubUrl.trimEnd('/')
+        // right after the app starts, the chat list may still be on its way
+        val all = agyBackend.conversations.value.ifEmpty {
+            withTimeoutOrNull(8_000) { agyBackend.conversations.first { it.isNotEmpty() } } ?: emptyList()
+        }
+        val local = all.filter { it.agent == AgentKind.AGY && !it.isCloud }
+        com.example.gemini.data.voice.AgyVoicePreferences.callChats(hub)
+            .firstNotNullOfOrNull { id -> local.firstOrNull { it.id == id } }
+            ?.let { return it }
+        val recent = local.sortedByDescending { it.updatedAt }.take(20)
+        val lastCallAt = coroutineScope {
+            recent.map { c ->
+                async { c to com.example.gemini.data.voice.AgyVoiceChats.fetch(c.id)?.maxOfOrNull { it.startedAtMs ?: 0L } }
+            }.awaitAll()
+        }
+        val found = lastCallAt.mapNotNull { (c, at) -> at?.let { c to it } }.maxByOrNull { it.second }?.first ?: return null
+        com.example.gemini.data.voice.AgyVoicePreferences.rememberCallChat(hub, found.id)
+        return found
+    }
+
     fun startPersistentStream(conversationId: String) = agyBackend.startPersistentStream(conversationId)
     fun deleteConversation(id: String) {
         when (agentOf(id)) {
@@ -439,8 +544,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (copies.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) { com.example.gemini.data.files.FileExplorerApi.delete(copies) }
         // Jarvis forgets it too: a deleted Jarvis chat is replaced by a new one on the next message
         com.example.gemini.data.jarvis.JarvisController.onChatDeleted(id)
+        // Agent memory: its history file goes too (memories it saved stay)
+        com.example.gemini.data.memory.MemorySync.onChatDeleted(id)
+        // its home-screen shortcut is greyed out, and it leaves the app icon's menu
+        com.example.gemini.data.homescreen.HomeShortcuts.onChatDeleted(getApplication(), id)
     }
     fun forkConversation(id: String) {
+        flushMemoryWait()
         if (agentOf(id) == AgentKind.CODEX) {
             agyBackend.detach()
             claudeBackend.detach()
@@ -482,22 +592,68 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun sendNow(content: String) {
         val refs = com.example.gemini.data.files.AttachedFiles.refsOf(_attachments.value)
-        val typed = PromptExpansion.expand(content)
+        val jarvis = com.example.gemini.data.jarvis.JarvisController
+        val chatId = currentConversation.value?.id
+        // (EGM's commands tell a Jarvis chat to run the reviewers as task chats)
+        val typed = PromptExpansion.expand(content, jarvis = jarvis.isAttached && jarvis.isJarvisTarget(chatId))
         val expanded = if (refs.isEmpty()) typed
             else listOf(typed, com.example.gemini.data.files.AttachedFiles.block(refs)).filter { it.isNotBlank() }.joinToString("\n\n")
         // a Jarvis chat on screen: its message carries Jarvis' hidden note (or goes to the voice Jarvis chat as a typed turn)
-        val jarvis = com.example.gemini.data.jarvis.JarvisController
-        val chatId = currentConversation.value?.id
         val intercepted = (if (jarvis.isAttached) jarvis.interceptScreenMessage(chatId, expanded) else expanded) ?: return
         rememberCopies(chatId, refs)
         // a normal chat (a Jarvis chat carries its own guide instead): the app's global context goes in front
-        val it = if (intercepted === expanded) withGlobalContext(chatId, expanded) else intercepted
-        when {
-            isClaudeActive -> claudeBackend.sendMessage(it)
-            isOpenCodeActive -> openCodeBackend.sendMessage(it)
-            isCodexActive -> codexBackend.sendMessage(it)
-            else -> agyBackend.sendMessage(it)
+        val normal = intercepted === expanded
+        val send: (String?) -> Unit = { memory ->
+            val prompt = if (normal) withGlobalContext(chatId, expanded) else intercepted
+            dispatch(if (memory != null) PromptExpansion.hidden(memory) + prompt else prompt)
         }
+        // Settings → Agents → Agent memory: a chat's first message also carries the memory text from the bridge (it
+        // waits for it briefly); messages typed meanwhile go after it, in order
+        memoryWait?.let { w -> w.queue += send; return }
+        val conv = currentConversation.value
+        val hasEarlier = messages.value.any { m -> m.role == MessageRole.USER }
+        // (not an Antigravity cloud chat: it runs in Google's cloud and cannot read the memory files)
+        if (!normal || conv == null || conv.cloudProjectId != null || !com.example.gemini.data.memory.AgentMemory.wants(conv.agent, chatId, hasEarlier)) {
+            send(null)
+            return
+        }
+        val wait = MemoryWait(chatId).also { it.queue += send }
+        memoryWait = wait
+        wait.job = viewModelScope.launch {
+            val memory = kotlinx.coroutines.withTimeoutOrNull(com.example.gemini.data.memory.AgentMemory.waitMs() + 500) {
+                com.example.gemini.data.memory.AgentMemory.contextFor(conv.agent, conv.workspaceUri, content)
+            }
+            finishMemoryWait(wait, memory)
+        }
+    }
+
+    private fun dispatch(prompt: String) = when {
+        isClaudeActive -> claudeBackend.sendMessage(prompt)
+        isOpenCodeActive -> openCodeBackend.sendMessage(prompt)
+        isCodexActive -> codexBackend.sendMessage(prompt)
+        else -> agyBackend.sendMessage(prompt)
+    }
+
+    /** A chat's first message waiting (briefly) for its Agent memory text, and the messages typed meanwhile. */
+    private class MemoryWait(val chatId: String?) {
+        val queue = mutableListOf<(String?) -> Unit>()
+        var job: kotlinx.coroutines.Job? = null
+    }
+    private var memoryWait: MemoryWait? = null
+
+    /** Sends what waited: the first message with [memory] (null: without it), then the others in order. */
+    private fun finishMemoryWait(wait: MemoryWait, memory: String?) {
+        if (memoryWait !== wait) return
+        memoryWait = null
+        wait.queue.forEachIndexed { i, send -> send(if (i == 0) memory else null) }
+        if (memory != null) com.example.gemini.data.memory.AgentMemory.markSent(wait.chatId ?: currentConversation.value?.id)
+    }
+
+    /** Leaving the chat (another one, a new one, a fork): a message still waiting for its memory text goes now, without it. */
+    private fun flushMemoryWait() {
+        val wait = memoryWait ?: return
+        wait.job?.cancel()
+        finishMemoryWait(wait, null)
     }
 
     /** The copies a sent message uses are kept under its chat (a new chat once it has its id), so deleting the chat deletes them. */
@@ -528,10 +684,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return prompt
     }
 
-    /** Editing the first message drops the hidden context with it: send it again with the next message. */
-    private fun forgetContextIfFirst(targetId: String) {
-        val firstUser = messages.value.firstOrNull { it.role == MessageRole.USER } ?: return
-        if (firstUser.id == targetId) com.example.gemini.data.context.GlobalContext.forget(currentConversation.value?.id)
+    /**
+     * Undoing a chat's first prompt makes the chat start over: its next message is a first message again, with the
+     * global context and the Agent memory text. Returns what to run once the undo worked (null: not the first prompt).
+     */
+    private fun restartIfFirst(targetId: String): (() -> Unit)? {
+        val firstUser = messages.value.firstOrNull { it.role == MessageRole.USER } ?: return null
+        if (firstUser.id != targetId) return null
+        val chatId = currentConversation.value?.id?.takeIf { it.isNotBlank() } ?: return null
+        return {
+            com.example.gemini.data.context.GlobalContext.restart(chatId)
+            com.example.gemini.data.memory.AgentMemory.forget(chatId)
+        }
     }
 
     val isTranscribingAudio = agyBackend.isTranscribingAudio
@@ -544,22 +708,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun prepareEditMessage(messageId: String): String? {
         if (isCodexActive) {
-            codexNotSupported("Editing a sent message")
+            codexNotSupported(L.chat.viewModel.editingASentMessage)
             return null
         }
         if (isOpenCodeActive) {
-            openCodeNotSupported("Editing a sent message")
+            openCodeNotSupported(L.chat.viewModel.editingASentMessage)
             return null
         }
         if (isClaudeActive) {
-            claudeNotSupported("Editing a sent message")
+            claudeNotSupported(L.chat.viewModel.editingASentMessage)
             return null
         }
         return agyBackend.prepareEditMessage(messageId)?.let { restoreAttachedFiles(it); editableText(it) }
     }
     fun revertAndEditLastUserMessage(targetMsg: ChatMessage, onRestored: (String) -> Unit) {
-        forgetContextIfFirst(targetMsg.id)
-        val restored: (String) -> Unit = { restoreAttachedFiles(it); onRestored(editableText(it)) }
+        val restart = restartIfFirst(targetMsg.id)
+        val restored: (String) -> Unit = { restart?.invoke(); restoreAttachedFiles(it); onRestored(editableText(it)) }
         if (isCodexActive) codexBackend.editMessage(targetMsg.id, restored)
         else if (isOpenCodeActive) openCodeBackend.editMessage(targetMsg.id, restoreFiles = false, restored)
         else if (isClaudeActive) claudeBackend.editMessage(targetMsg.id, restoreCode = false, restored)
@@ -568,7 +732,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Claude: edit a sent prompt in a copy of the chat that ends before it; optionally restore the files changed since. */
     fun editClaudeMessage(targetMsg: ChatMessage, restoreCode: Boolean, onRestored: (String) -> Unit) {
-        val restored: (String) -> Unit = { restoreAttachedFiles(it); onRestored(editableText(it)) }
+        val restart = restartIfFirst(targetMsg.id)
+        val restored: (String) -> Unit = { restart?.invoke(); restoreAttachedFiles(it); onRestored(editableText(it)) }
         if (isCodexActive) codexBackend.editMessage(targetMsg.id, restored)
         else if (isOpenCodeActive) openCodeBackend.editMessage(targetMsg.id, restoreCode, restored)
         else claudeBackend.editMessage(targetMsg.id, restoreCode, restored)
@@ -758,6 +923,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         requestedViewMode.value = null
     }
 
+    /** A settings page another screen wants shown (a SettingsSection name, e.g. the terminal drawer's gear); ChatScreen opens it. */
+    val requestedSettingsSection = MutableStateFlow<String?>(null)
+
+    fun requestSettingsSection(section: String) {
+        requestedSettingsSection.value = section
+    }
+
+    fun consumeRequestedSettingsSection() {
+        requestedSettingsSection.value = null
+    }
+
     /** Antigravity's chat state (shared store); Claude Code keeps its own, see [messages]. */
     private val _messages = store.messages
     /** Messages of the chat on screen, from the agent that owns it. */
@@ -934,7 +1110,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             if (t is kotlinx.coroutines.CancellationException) throw t
             Log.e("ChatViewModel", "Failed to add attachment from uri $uri: ${t.message}")
             com.example.gemini.ui.components.AppToastHelper.showToast(
-                "Could not attach $fileName: ${t.message ?: t.javaClass.simpleName}",
+                L.chat.viewModel.couldNotAttachFilenameValue(fileName, t.message ?: t.javaClass.simpleName),
                 com.example.gemini.ui.components.ChatToastType.ERROR
             )
         }
@@ -981,7 +1157,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _attachments.update { list -> list.filter { it.id != id } }
                 uploadFolders.remove(id)?.let { com.example.gemini.data.files.FileExplorerApi.delete(listOf(it)) }
                 com.example.gemini.ui.components.AppToastHelper.showToast(
-                    "Could not copy $fileName to the agent's machine: ${result.error ?: "unknown error"}",
+                    L.chat.viewModel.couldNotCopyFilenameToThe(fileName, result.error ?: L.chat.viewModel.unknownError),
                     com.example.gemini.ui.components.ChatToastType.ERROR
                 )
             }
@@ -1179,6 +1355,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val floatingSwitcherOrientation: StateFlow<String> = authPrefs.floatingSwitcherOrientation
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), authPrefs.getFloatingSwitcherOrientationSync())
 
+    val floatingSwitcherHandleIcon: StateFlow<String> = authPrefs.floatingSwitcherHandleIcon
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), authPrefs.getFloatingSwitcherHandleIconSync())
+
     val floatingSwitcherItems: StateFlow<List<String>> = authPrefs.floatingSwitcherItems
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), authPrefs.getFloatingSwitcherItemsSync())
 
@@ -1203,6 +1382,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun setFloatingSwitcherOrientation(orientation: String) {
         viewModelScope.launch {
             authPrefs.saveFloatingSwitcherOrientation(orientation)
+        }
+    }
+
+    fun setFloatingSwitcherHandleIcon(icon: String) {
+        viewModelScope.launch {
+            authPrefs.saveFloatingSwitcherHandleIcon(icon)
         }
     }
 
@@ -1245,6 +1430,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             authPrefs.saveGroupChatsByWorkspace(enabled)
         }
+    }
+
+    /** Fold runs of agent steps into pills: see [com.example.gemini.ui.chat.StepGroups]. */
+    val groupAgentSteps: StateFlow<Boolean> = authPrefs.groupAgentSteps
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), authPrefs.getGroupAgentStepsSync())
+
+    fun setGroupAgentSteps(enabled: Boolean) {
+        viewModelScope.launch { authPrefs.saveGroupAgentSteps(enabled) }
+    }
+
+    /** How many steps in a row fold into a pill (Group Agent Steps → Fold after). */
+    val groupStepsMin: StateFlow<Int> = authPrefs.groupStepsMin
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), authPrefs.getGroupStepsMinSync())
+
+    fun setGroupStepsMin(steps: Int) {
+        viewModelScope.launch { authPrefs.saveGroupStepsMin(steps) }
+    }
+
+    val showMessageStats: StateFlow<Boolean> = authPrefs.showMessageStats
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), authPrefs.getShowMessageStatsSync())
+
+    fun setShowMessageStats(show: Boolean) {
+        viewModelScope.launch { authPrefs.saveShowMessageStats(show) }
     }
 
     fun setFloatingBubbleEnabled(enabled: Boolean) {
@@ -1628,7 +1836,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         if (!told) {
                             told = true
                             withContext(Dispatchers.Main) {
-                                com.example.gemini.ui.components.AppToastHelper.showToast("Waiting for the local server to restore the chat…", com.example.gemini.ui.components.ChatToastType.INFO)
+                                com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.waitingForTheLocalServerTo, com.example.gemini.ui.components.ChatToastType.INFO)
                             }
                         }
                         delay(1_500)
@@ -1648,8 +1856,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         val hubReady = systemConnectionState.value.isReady
                         withContext(Dispatchers.Main) {
                             com.example.gemini.ui.components.AppToastHelper.showToast(
-                                if (hubReady) "Chat restored: ${restored.title}"
-                                else "Chat restored: ${restored.title}. It opens once Antigravity has started.",
+                                if (hubReady) L.chat.viewModel.chatRestoredTitle(restored.title)
+                                else L.chat.viewModel.chatRestoredTitleItOpensOnce(restored.title),
                                 com.example.gemini.ui.components.ChatToastType.SUCCESS
                             )
                         }
@@ -1662,14 +1870,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     if (!isActive) return@launch
                     _sharedConversationPreview.value = parsed
                     withContext(Dispatchers.Main) {
-                        com.example.gemini.ui.components.AppToastHelper.showToast("Loaded shared chat: ${parsed.title}", com.example.gemini.ui.components.ChatToastType.SUCCESS)
+                        com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.loadedSharedChatTitle(parsed.title), com.example.gemini.ui.components.ChatToastType.SUCCESS)
                     }
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) return@launch
                 Log.e("ChatViewModel", "Failed to load shared conversation from uri $uri: ${e.message}", e)
                 withContext(Dispatchers.Main) {
-                    com.example.gemini.ui.components.AppToastHelper.showToast("Failed to load shared chat file", com.example.gemini.ui.components.ChatToastType.ERROR)
+                    com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.failedToLoadSharedChatFile, com.example.gemini.ui.components.ChatToastType.ERROR)
                 }
             } finally {
                 _isSharedConversationLoading.value = false
@@ -1686,7 +1894,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val ready = withTimeoutOrNull(180_000) { systemConnectionState.first { it.isReady } } != null
         if (!ready) {
             withContext(Dispatchers.Main) {
-                com.example.gemini.ui.components.AppToastHelper.showToast("Antigravity has not started yet: the restored chat is in the chat list.", com.example.gemini.ui.components.ChatToastType.INFO)
+                com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.antigravityHasNotStartedYetThe, com.example.gemini.ui.components.ChatToastType.INFO)
             }
             return
         }
@@ -1731,12 +1939,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val content = context.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
                 _incomingMarkdownPreview.value = resolvedName to content
                 withContext(Dispatchers.Main) {
-                    com.example.gemini.ui.components.AppToastHelper.showToast("Opened $resolvedName", com.example.gemini.ui.components.ChatToastType.SUCCESS)
+                    com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.openedResolvedname(resolvedName), com.example.gemini.ui.components.ChatToastType.SUCCESS)
                 }
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Failed to load markdown from URI $uri: ${e.message}", e)
                 withContext(Dispatchers.Main) {
-                    com.example.gemini.ui.components.AppToastHelper.showToast("Failed to load markdown file", com.example.gemini.ui.components.ChatToastType.ERROR)
+                    com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.failedToLoadMarkdownFile, com.example.gemini.ui.components.ChatToastType.ERROR)
                 }
             }
         }
@@ -1762,7 +1970,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val resolvedPath = if (uri.scheme == "file") uri.path ?: resolvedName else uri.toString()
                 val content = context.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
 
-                com.example.gemini.data.daemon.TermuxDaemonManager.openOrSelectTab(
+                com.example.gemini.data.daemon.IdeDaemonManager.openOrSelectTab(
                     path = resolvedPath,
                     name = resolvedName,
                     content = content,
@@ -1770,12 +1978,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 requestViewMode("IDE")
                 withContext(Dispatchers.Main) {
-                    com.example.gemini.ui.components.AppToastHelper.showToast("Opened $resolvedName in IDE", com.example.gemini.ui.components.ChatToastType.SUCCESS)
+                    com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.openedResolvednameInIde(resolvedName), com.example.gemini.ui.components.ChatToastType.SUCCESS)
                 }
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Failed to open file in IDE from URI $uri: ${e.message}", e)
                 withContext(Dispatchers.Main) {
-                    com.example.gemini.ui.components.AppToastHelper.showToast("Failed to open file in IDE", com.example.gemini.ui.components.ChatToastType.ERROR)
+                    com.example.gemini.ui.components.AppToastHelper.showToast(L.chat.viewModel.failedToOpenFileInIde, com.example.gemini.ui.components.ChatToastType.ERROR)
                 }
             }
         }
