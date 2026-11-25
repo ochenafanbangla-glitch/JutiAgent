@@ -1,9 +1,9 @@
-package com.termux.app
+package com.example.gemini.app
 
-import com.example.gemini.data.service.TermuxService as CoreTermuxService
+import com.example.gemini.data.service.AntiGemService
 
 /**
  * Direct com.termux.app.TermuxService implementation for shell commands
  * (e.g., termux-wake-lock, termux-wake-unlock) targeting explicit component com.termux.app.TermuxService.
  */
-class TermuxService : CoreTermuxService()
+class TermuxService : AntiGemService()
