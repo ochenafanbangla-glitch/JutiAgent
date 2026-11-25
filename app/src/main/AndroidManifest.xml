@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- No sharedUserId: adding one would force existing users to reinstall, so the app never claims one. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+    xmlns:tools="http://schemas.android.com/tools"
+>
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -23,6 +25,9 @@
     <!-- mini app reminders and exact-time background tasks (Android 14+ makes alarms inexact without it) -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- ADB Connect: turns Wireless debugging back on by itself. Only the shell user can grant it (pm grant through adb,
+         Shizuku or root); nothing else uses it -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions" />
 
     <!-- Signature-level private permissions to protect internal Termux and API receivers/services -->
     <permission
@@ -34,6 +39,8 @@
 
     <uses-permission android:name="${applicationId}.permission.RUN_COMMAND" />
     <uses-permission android:name="${applicationId}.permission.API" />
+    <!-- Home-screen shortcuts on Android 7 launchers (Android 8+ asks the launcher directly) -->
+    <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
@@ -50,11 +57,13 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Gemini">
-        <!-- The SDK's auto-start provider has no namespace setting. The app starts TelemetryDeck itself. -->
-        <provider
-            android:name="com.telemetrydeck.sdk.TelemetryDeckInitProvider"
-            android:authorities="${applicationId}.TelemetryDeckInitProvider"
-            tools:node="remove" />
+        <!-- Crash screen: its own process, so it has fresh memory (works after an out-of-memory crash too) -->
+        <activity
+            android:name=".crash.CrashActivity"
+            android:exported="false"
+            android:process=":crash"
+            android:taskAffinity="${applicationId}.crash"
+            android:theme="@style/Theme.Gemini" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -139,7 +148,7 @@
         </activity>
 
         <activity
-            android:name=".TermuxActivity"
+            android:name=".TerminalActivity"
             android:exported="true"
             android:label="@string/anti_term_name"
             android:icon="@mipmap/ic_launcher"
@@ -150,10 +159,10 @@
             android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize"
             android:windowSoftInputMode="stateHidden|adjustResize" />
 
-        <!-- AntiTerm Style Launcher Alias (off by default: turn it on in Settings > Appearance) -->
+        <!-- JutiTerm Style Launcher Alias (off by default: turn it on in Settings > Appearance) -->
         <activity-alias
-            android:name=".TermuxAntiTermAlias"
-            android:targetActivity=".TermuxActivity"
+            android:name=".JutiTermAlias"
+            android:targetActivity=".TerminalActivity"
             android:icon="@mipmap/ic_launcher"
             android:roundIcon="@mipmap/ic_launcher_round"
             android:label="@string/anti_term_name"
@@ -168,8 +177,8 @@
 
         <!-- Classic Termux Style Launcher Alias -->
         <activity-alias
-            android:name=".TermuxClassicAlias"
-            android:targetActivity=".TermuxActivity"
+            android:name=".ClassicTermAlias"
+            android:targetActivity=".TerminalActivity"
             android:icon="@mipmap/ic_termux_launcher"
             android:roundIcon="@mipmap/ic_termux_launcher_round"
             android:label="@string/termux_name"
@@ -239,8 +248,8 @@
             android:exported="true"
             android:permission="${applicationId}.permission.API">
             <intent-filter>
-                <action android:name="com.termux.api.ACTION_API" />
-                <action android:name="com.termux.api" />
+                <action android:name="com.example.gemini.api.ACTION_API" />
+                <action android:name="com.example.gemini.api" />
             </intent-filter>
         </receiver>
 
@@ -255,9 +264,9 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Background terminal and AI language server execution" />
             <intent-filter>
-                <action android:name="com.termux.service_wake_lock" />
-                <action android:name="com.termux.service_wake_unlock" />
-                <action android:name="com.termux.service_stop" />
+                <action android:name="com.example.gemini.service_wake_lock" />
+                <action android:name="com.example.gemini.service_wake_unlock" />
+                <action android:name="com.example.gemini.service_stop" />
             </intent-filter>
         </service>
 
@@ -299,6 +308,112 @@
             </intent-filter>
         </service>
 
+        <!-- Jarvis tile / shortcut: invisible screen that starts Jarvis listening while it is in front, then closes -->
+        <activity
+            android:name="com.example.gemini.data.jarvis.JarvisTalkActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden" />
+
+        <!-- Voice call Quick Settings tile: one tap calls Antigravity in the last chat that had a call -->
+        <service
+            android:name="com.example.gemini.data.voice.VoiceCallTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_voice_call"
+            android:label="Voice call"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- Voice call tile / shortcut: invisible screen that starts the call while it is in front, then closes -->
+        <activity
+            android:name="com.example.gemini.data.voice.VoiceCallLaunchActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden" />
+
+        <!-- Home screen: every shortcut, app-icon menu entry and widget tap opens this invisible screen with an
+             antigem:// link; it hands it on and closes. Exported for Android 7 launchers; scripts need the app's key. -->
+        <activity
+            android:name="com.example.gemini.data.homescreen.HomeLaunchActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden" />
+
+        <!-- A widget's setup screen (when it is placed, and from its settings on Android 12+) -->
+        <activity
+            android:name="com.example.gemini.ui.homescreen.WidgetConfigActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity="${applicationId}.widgetconfig"
+            android:theme="@style/Theme.Gemini"
+            android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <!-- Home-screen widgets: Chats, Quick actions, One chat, Scripts -->
+        <receiver
+            android:name="com.example.gemini.ui.homescreen.ChatsWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_chats_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_chats_info" />
+        </receiver>
+        <receiver
+            android:name="com.example.gemini.ui.homescreen.ActionsWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_actions_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_actions_info" />
+        </receiver>
+        <receiver
+            android:name="com.example.gemini.ui.homescreen.ChatWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_chat_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_chat_info" />
+        </receiver>
+        <receiver
+            android:name="com.example.gemini.ui.homescreen.ScriptsWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_scripts_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_scripts_info" />
+        </receiver>
+        <!-- A One chat widget placed from the app: the launcher tells which widget it became -->
+        <receiver
+            android:name="com.example.gemini.ui.homescreen.HomeWidgetPinReceiver"
+            android:exported="false" />
+
         <!-- Holds the ADB pairing notification (code entry) while the user is in Developer options -->
         <service
             android:name="com.example.gemini.data.adb.AdbPairingService"
@@ -309,6 +424,15 @@
                 android:value="Wireless debugging pairing code entry" />
         </service>
 
+        <!-- Shizuku hands its binder to the app through this provider (ADB Connect → Shizuku) -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
         <provider
             android:name="com.example.gemini.data.files.AntiGemFileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -317,6 +441,19 @@
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- AntiGem's home (and the Ubuntu chroot's) in Android's file picker and Files app. Only the system picker
+             (MANAGE_DOCUMENTS) can browse it; Settings → Files in other apps disables this component. -->
+        <provider
+            android:name="com.example.gemini.data.files.AntiGemDocumentsProvider"
+            android:authorities="${applicationId}.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
         </provider>
 
         <!-- Mini Apps: the launcher grid, each app's root page (its own task / Recents card, one per app id via the
