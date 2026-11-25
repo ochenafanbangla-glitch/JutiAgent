@@ -27,10 +27,19 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.Socket
 import java.util.Locale
+import com.example.gemini.i18n.L
 
 class TermuxApiReceiver : BroadcastReceiver() {
 
     companion object {
+        /**
+         * The termux-api methods handled in [onReceive] (the names the termux-* commands send). The dispatcher script
+         * (LocalEnvironmentManager.ensureTermuxApiDispatcher) sends only these here: keep both in step.
+         */
+        val BUILT_IN_METHODS = listOf(
+            "Toast", "Vibrate", "Clipboard", "Torch", "TextToSpeech", "Notification", "NotificationRemove", "Volume", "BatteryStatus"
+        )
+
         private const val TAG = "TermuxApiReceiver"
         private const val API_NOTIFICATION_CHANNEL_ID = "antigem_termux_api_notifications"
         private var ttsInstance: TextToSpeech? = null
@@ -172,7 +181,7 @@ class TermuxApiReceiver : BroadcastReceiver() {
     private fun handleNotification(context: Context, intent: Intent) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val id = intent.getIntExtra("id", 4242)
-        val title = intent.getStringExtra("title") ?: "Termux Notification"
+        val title = intent.getStringExtra("title") ?: L.receiver.termuxApiReceiver.termuxNotification
         val content = intent.getStringExtra("content") ?: intent.getStringExtra("text") ?: ""
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
