@@ -34,6 +34,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -80,63 +81,79 @@ import java.util.zip.ZipFile
 import org.json.JSONObject
 import org.json.JSONArray
 import com.example.gemini.data.daemon.ProjectItem
-import com.example.gemini.data.daemon.TermuxDaemonManager
+import com.example.gemini.data.daemon.IdeDaemonManager
 import com.example.gemini.data.daemon.IdeApiClient
+import com.example.gemini.i18n.L
 
-enum class SettingsSection(val title: String, val subtitle: String) {
-    MAIN("Settings & Preferences", "Configure your AntiGem experience"),
-    THEMES("Themes", "Light and dark mode, and the theme gallery"),
-    APPEARANCE("Appearance", "Chat text size, chat list, header icons and the app switcher"),
-    STEM_RENDERING("STEM & diagrams", "Chemistry, graphs, geometry, simulations, circuits and offline Mermaid in chats"),
-    SERVERS("Servers & Connectivity", "Configure AGY Hub and IDE Bridge endpoints"),
-    CONNECT_PC("Connect to PC", "Use the agents on your PC (AntiGem in VS Code) from this phone"),
-    WEBVIEW_EXTENSIONS("Custom AntiGem Plugins", "Install and manage plugins: MCP tools and skills"),
-    SLASH_COMMANDS("Slash Commands", "Your own / commands and what they expand to"),
-    MCP("MCP Servers", "Model Context Protocol tools & integrations"),
-    SKILLS_PLUGINS("Skills & Plugins", "Agent capabilities, Google plugins, and extensions"),
-    TERMINAL("Terminal & Shell", "SSH configuration, local tools, and styling"),
-    BACKUPS("Backups & Restore", "Backup rootfs environment and AGY chat histories"),
-    DATA_PROTECTION("Data Loss Protection", "Uninstall shield & App Info clear data protection"),
-    PROJECT_CHECKPOINTS("Project checkpoints", "Go back to before any chat message: files restored with a preview"),
-    COMMANDS("Commands & Permissions", "Auto-run policy, sandbox mode, and tool approvals"),
-    ANTIGRAVITY("Antigravity", "CLI, MCP servers, skills & plugins, commands & permissions"),
-    AGY_CLI("Antigravity CLI", "agy version and install, on this device or the server"),
-    AGY_CLOUD("Cloud agents", "Antigravity chats on a Google cloud machine (Remote Agents)"),
-    CLAUDE("Claude Code", "Account, models, permissions, MCP, plugins & memory"),
+enum class SettingsSection(private val titleText: () -> String, private val subtitleText: () -> String) {
+    MAIN({ L.settings.dialog.settingsPreferences }, { L.settings.dialog.configureYourAntigemExperience }),
+    THEMES({ L.common.themes }, { L.settings.dialog.lightAndDarkModeAndThe }),
+    LANGUAGE({ L.common.language }, { L.settings.dialog.theAppsLanguageYourOwnTranslations }),
+    /** The texts of one language (which one: the dialog's languageTextsId). */
+    LANGUAGE_TEXTS({ L.settings.dialog.languageTexts }, { L.settings.dialog.everyTextOfTheAppWith }),
+    APPEARANCE({ L.settings.dialog.appearance }, { L.settings.dialog.chatTextSizeAgentStepsMessage }),
+    HOME_SCREEN({ L.settings.dialog.homeScreen }, { L.settings.dialog.widgetsShortcutsToChatsAndPages }),
+    FILE_PICKER({ L.settings.dialog.filesInOtherApps }, { L.settings.dialog.antigemsAndUbuntusHomeFoldersIn }),
+    STEM_RENDERING({ L.settings.dialog.stemDiagrams }, { L.settings.dialog.chemistryGraphsGeometrySimulations }),
+    SERVERS({ L.settings.dialog.whereAgentsRun }, { L.settings.dialog.thisPhoneAntigemOrUbuntuChroot }),
+    CONNECT_PC({ L.settings.dialog.connectToPc }, { L.settings.dialog.useTheAgentsOnYourPc }),
+    WEBVIEW_EXTENSIONS({ L.settings.dialog.customAntigemPlugins }, { L.settings.dialog.installAndManagePluginsMcpTools }),
+    SLASH_COMMANDS({ L.settings.dialog.slashCommands }, { L.settings.dialog.yourOwnCommandsAndWhatThey }),
+    MCP({ L.settings.dialog.mcpServers }, { L.settings.dialog.modelContextProtocolToolsIntegrations }),
+    SKILLS_PLUGINS({ L.settings.dialog.skillsPlugins }, { L.settings.dialog.agentCapabilitiesGooglePluginsAnd }),
+    TERMINAL({ L.common.terminal }, { L.settings.dialog.fontCursorAndColorsAndSsh }),
+    UBUNTU_CHROOT({ L.common.ubuntuChroot }, { L.settings.dialog.statusMountsSharedFoldersStoragePackages }),
+    /** Not a page: shown in place of a Termux-only page while the Ubuntu chroot is the phone's runtime. */
+    TERMUX_ONLY({ L.settings.dialog.termuxOnly }, { L.settings.dialog.worksWithTheTermuxEnvironment }),
+    BACKUPS({ L.settings.dialog.backupsRestore }, { L.settings.dialog.backupRootfsEnvironmentAndAgyChat }),
+    DATA_PROTECTION({ L.settings.dialog.dataLossProtection }, { L.settings.dialog.uninstallShieldAppInfoClearData }),
+    PROJECT_CHECKPOINTS({ L.settings.dialog.projectCheckpoints }, { L.settings.dialog.goBackToBeforeAnyChat }),
+    COMMANDS({ L.settings.dialog.commandsPermissions }, { L.settings.dialog.autoRunPolicySandboxModeAnd }),
+    ANTIGRAVITY({ L.common.antigravity }, { L.settings.dialog.accountCliMcpServersSkillsPlugins }),
+    AGY_CLI({ L.common.accountCli }, { L.settings.dialog.googleSignInAgyVersionAnd }),
+    AGY_CLOUD({ L.settings.dialog.cloudAgents }, { L.settings.dialog.antigravityChatsOnAGoogleCloud }),
+    AGY_VOICE({ L.settings.dialog.voiceCalls }, { L.settings.dialog.theVoiceCallTileAndShortcut }),
+    CLAUDE({ L.common.claudeCode }, { L.settings.dialog.accountModelsPermissionsMcpPluginsMemory }),
     /** One Claude Code page (which one: the dialog's claudePage); not a page of its own for Jarvis. */
-    CLAUDE_PAGE("Claude Code", "Account, models, permissions, MCP, plugins & memory"),
-    OPENCODE("OpenCode", "Server, providers, custom OpenAI-compatible endpoints & approvals"),
+    CLAUDE_PAGE({ L.common.claudeCode }, { L.settings.dialog.accountModelsPermissionsMcpPluginsMemory }),
+    OPENCODE({ "OpenCode" }, { L.settings.dialog.cliProvidersCustomOpenaiCompatible }),
     /** One OpenCode page (which one: the dialog's openCodePage). */
-    OPENCODE_PAGE("OpenCode", "Server, providers, endpoints, MCP & approvals"),
-    CODEX("Codex", "Account, usage limits, permissions, MCP, server & install"),
+    OPENCODE_PAGE({ "OpenCode" }, { L.settings.dialog.cliProvidersEndpointsMcpApprovals }),
+    CODEX({ L.common.codex }, { L.settings.dialog.accountCliUsageLimitsPermissionsMcp }),
     /** One Codex page (which one: the dialog's codexPage). */
-    CODEX_PAGE("Codex", "Account, usage limits, permissions, MCP, server & install"),
-    AGENTS("Agents", "Run Antigravity, Claude Code, OpenCode, Codex or several"),
-    GLOBAL_CONTEXT("Global context", "What every chat is told about this app, and your own instructions"),
-    JARVIS("Jarvis", "Hands-free voice control of the whole app"),
-    JARVIS_AGENT("Jarvis · Agent", "Which agent and model Jarvis talks to"),
-    JARVIS_PERSONALITY("Jarvis · Personality & you", "How Jarvis speaks, and what it should know about you"),
-    JARVIS_SETUP("Jarvis · Setup", "The Jarvis MCP server, permissions and the microphone"),
-    JARVIS_WAKE("Jarvis · Waking Jarvis", "Button, wake phrase, hands-free mode and the headset button"),
-    JARVIS_LISTEN("Jarvis · Listening & sending", "When your words are sent, send and cancel phrases, speech recognition"),
-    JARVIS_VOICE("Jarvis · Voice output", "Jarvis' voice, speed, pitch and quiet mode"),
-    JARVIS_TASKS("Jarvis · Manager & tasks", "What Jarvis tells you about tasks and other chats"),
-    JARVIS_APPROVALS("Jarvis · Approvals", "Approvals by voice and app setting changes"),
-    JARVIS_SCREEN("Jarvis · Screen & look", "Screen on, the orb and what Jarvis shows"),
-    JARVIS_CHAT("Jarvis · Jarvis chat", "Live context, fresh chats and Jarvis' memory"),
-    DIAGNOSTICS("Diagnostics & Performance", "Live network connections, active streams & thread HUD"),
-    UTILITIES("Utilities", "Handy device tools"),
-    GITHUB("GitHub", "Sign in with the GitHub CLI, your repositories and git credentials"),
-    ADB_CONNECT("ADB Connect", "Connect the terminal's adb to this phone over Wireless debugging"),
-    ANDROID_AUTOMATION("Android Automation", "Let AI agents see and control this phone"),
-    REA("REA · Reverse Engineering", "Let agents analyze APKs, Flutter, React Native and native code"),
-    REA_GROUPS("REA Tool Groups", "Which REA tools each REA MCP server shows"),
-    ANDROID_DEV("Android Development", "Build Kotlin / Compose, Flutter and React Native apps on this phone"),
-    TERMUX_SUPPORT("Termux Support", "Termux:API and the X11 desktop"),
-    TERMUX_API("Termux:API", "How termux-api commands are handled"),
-    X11_DESKTOP("X11 Desktop", "Linux desktop apps with Termux:X11"),
-    CHANGELOG("What's new", "Every AntiGem version and what changed"),
-    ABOUT("About & Info", "App version, package details, and bridge export");
+    CODEX_PAGE({ L.common.codex }, { L.settings.dialog.accountCliUsageLimitsPermissionsMcp }),
+    AGENTS({ L.settings.dialog.agents }, { L.settings.dialog.runAntigravityClaudeCodeOpencodeCodex }),
+    GLOBAL_CONTEXT({ L.settings.dialog.globalContext }, { L.settings.dialog.whatEveryChatIsToldAbout }),
+    AGENT_MEMORY({ L.settings.dialog.agentMemoryHistory }, { L.settings.dialog.memoriesEveryAgentKeepsAcrossChats }),
+    AGENT_HISTORY({ L.settings.dialog.savedChats }, { L.settings.dialog.theChatHistoryTheAgentsCan }),
+    EGM({ L.settings.dialog.egmElephantGoldfish }, { L.settings.dialog.planADesignAndHaveFresh }),
+    JARVIS({ L.common.jarvis }, { L.settings.dialog.handsFreeVoiceControlOfThe }),
+    JARVIS_AGENT({ L.settings.dialog.jarvisAgent }, { L.settings.dialog.whichAgentAndModelJarvisTalks }),
+    JARVIS_PERSONALITY({ L.settings.dialog.jarvisPersonalityYou }, { L.settings.dialog.howJarvisSpeaksAndWhatIt }),
+    JARVIS_SETUP({ L.settings.dialog.jarvisSetup }, { L.settings.dialog.theJarvisMcpServerPermissionsAnd }),
+    JARVIS_WAKE({ L.settings.dialog.jarvisWakingJarvis }, { L.settings.dialog.buttonWakePhraseHandsFreeMode }),
+    JARVIS_LISTEN({ L.settings.dialog.jarvisListeningSending }, { L.settings.dialog.whenYourWordsAreSentSend }),
+    JARVIS_VOICE({ L.settings.dialog.jarvisVoiceOutput }, { L.settings.dialog.jarvisVoiceSpeedPitchAndQuiet }),
+    JARVIS_TASKS({ L.settings.dialog.jarvisManagerTasks }, { L.settings.dialog.whatJarvisTellsYouAboutTasks }),
+    JARVIS_APPROVALS({ L.settings.dialog.jarvisApprovals }, { L.settings.dialog.approvalsByVoiceAndAppSetting }),
+    JARVIS_SCREEN({ L.settings.dialog.jarvisScreenLook }, { L.settings.dialog.screenOnTheOrbAndWhat }),
+    JARVIS_CHAT({ L.settings.dialog.jarvisJarvisChat }, { L.settings.dialog.liveContextFreshChatsAndJarvis }),
+    DIAGNOSTICS({ L.settings.dialog.diagnosticsPerformance }, { L.settings.dialog.liveNetworkConnectionsActiveStreams }),
+    UTILITIES({ L.settings.dialog.utilities }, { L.settings.dialog.handyDeviceTools }),
+    GITHUB({ "GitHub" }, { L.settings.dialog.signInWithTheGithubCli }),
+    ADB_CONNECT({ L.settings.dialog.adbConnect }, { L.settings.dialog.shellAccessToThisPhoneThrough }),
+    ANDROID_AUTOMATION({ L.settings.dialog.androidAutomation }, { L.settings.dialog.letAiAgentsSeeAndControl }),
+    REA({ L.settings.dialog.reaReverseEngineering }, { L.settings.dialog.letAgentsAnalyzeApksFlutterReact }),
+    REA_GROUPS({ L.settings.dialog.reaToolGroups }, { L.settings.dialog.whichReaToolsEachReaMcp }),
+    ANDROID_DEV({ L.settings.dialog.androidDevelopment }, { L.settings.dialog.buildKotlinComposeFlutterAndReact }),
+    TERMUX_SUPPORT({ L.settings.dialog.termuxSupport }, { L.settings.dialog.termuxApiAndTheX11Desktop }),
+    TERMUX_API({ "Termux:API" }, { L.settings.dialog.howTermuxApiCommandsAreHandled }),
+    X11_DESKTOP({ L.settings.dialog.x11Desktop }, { L.settings.dialog.linuxDesktopAppsWithTermuxX11 }),
+    UPDATES({ L.settings.dialog.updates }, { L.settings.dialog.betaUpdatesAndHowOftenAntigem }),
+    CHANGELOG({ L.settings.dialog.whatsNew }, { L.settings.dialog.everyAntigemVersionAndWhatChanged }),
+    ABOUT({ L.settings.dialog.aboutInfo }, { L.settings.dialog.appVersionPackageDetailsAndBridge });
+    val title: String get() = titleText()
+    val subtitle: String get() = subtitleText()
 
     /** The Jarvis section this page shows (Settings → Jarvis → …), or null. */
     val jarvisPage: com.example.gemini.ui.jarvis.JarvisSettingsPage? get() = when (this) {
@@ -155,17 +172,34 @@ enum class SettingsSection(val title: String, val subtitle: String) {
 
     /** Where Back goes from this section. */
     val parent: SettingsSection get() = when (this) {
-        AGY_CLI, AGY_CLOUD, MCP, SKILLS_PLUGINS, COMMANDS -> ANTIGRAVITY
+        AGY_CLI, AGY_CLOUD, AGY_VOICE, MCP, SKILLS_PLUGINS, COMMANDS -> ANTIGRAVITY
         CLAUDE_PAGE -> CLAUDE
         OPENCODE_PAGE -> OPENCODE
         CODEX_PAGE -> CODEX
-        TERMUX_API, X11_DESKTOP -> TERMUX_SUPPORT
+        TERMUX_API -> TERMUX_SUPPORT
+        // with the Ubuntu chroot the X11 row is on the main page (Termux Support is Termux-only there)
+        X11_DESKTOP -> if (chrootRunsPhone()) MAIN else TERMUX_SUPPORT
         REA_GROUPS -> REA
-        GLOBAL_CONTEXT -> AGENTS
+        UBUNTU_CHROOT -> SERVERS
+        GLOBAL_CONTEXT, AGENT_MEMORY, EGM -> AGENTS
+        AGENT_HISTORY -> AGENT_MEMORY
         CHANGELOG -> ABOUT
+        LANGUAGE_TEXTS -> LANGUAGE
         else -> if (jarvisPage != null) JARVIS else MAIN
     }
 }
+
+/**
+ * Pages that run the Termux environment's own tools (Termux:API, backups, the GitHub CLI). REA, Android development
+ * and the X11 desktop work in the Ubuntu chroot too (they install into it), so they are not here.
+ */
+private val TERMUX_ONLY_SECTIONS = setOf(
+    SettingsSection.TERMUX_SUPPORT, SettingsSection.TERMUX_API, SettingsSection.BACKUPS, SettingsSection.GITHUB
+)
+
+/** The Ubuntu chroot is this phone's runtime (not server mode): Termux-only pages show a notice instead. */
+private fun chrootRunsPhone(): Boolean =
+    !com.example.gemini.data.preferences.AuthPreferences.currentRemoteMode && com.example.gemini.data.local.chroot.ChrootManager.isActiveNow()
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -252,6 +286,8 @@ fun SettingsDialog(
     floatingSwitcherItems: List<String> = listOf("chat", "ide", "terminal", "browser", "notes", "files"),
     floatingSwitcherAutoCollapseSec: Int = 0,
     onSetFloatingSwitcherOrientation: (String) -> Unit = {},
+    floatingSwitcherHandleIcon: String = "grid",
+    onSetFloatingSwitcherHandleIcon: (String) -> Unit = {},
     onSetFloatingSwitcherItems: (List<String>) -> Unit = {},
     onSetFloatingSwitcherAutoCollapseSec: (Int) -> Unit = {},
     onResetFloatingSwitcherPosition: () -> Unit = {},
@@ -261,8 +297,12 @@ fun SettingsDialog(
     commandSandboxEnabled: Boolean = false,
     requireApprovalForFileEdits: Boolean = false,
     defaultApprovalScope: String = "PERMISSION_SCOPE_ONCE",
-    groupChatsByWorkspace: Boolean = false,
-    onToggleGroupChatsByWorkspace: (Boolean) -> Unit = {},
+    groupAgentSteps: Boolean = true,
+    onToggleGroupAgentSteps: (Boolean) -> Unit = {},
+    groupStepsMin: Int = 2,
+    onSetGroupStepsMin: (Int) -> Unit = {},
+    showMessageStats: Boolean = true,
+    onToggleShowMessageStats: (Boolean) -> Unit = {},
     globalSecuritySettings: com.example.gemini.data.remote.AgyHubClient.GlobalUserSettings? = null,
     globalSettingsError: String? = null,
     isGlobalSettingsLoading: Boolean = false,
@@ -293,11 +333,16 @@ fun SettingsDialog(
     claude: com.example.gemini.ui.claude.ClaudeSettingsDeps? = null,
     initialClaudePage: com.example.gemini.ui.claude.ClaudeSettingsPage? = null,
     openCode: com.example.gemini.data.agent.opencode.OpenCodeChatBackend? = null,
-    /** Opens on this OpenCode page (e.g. Server & install from an Install button). */
+    /** Opens on this OpenCode page (e.g. OpenCode CLI from an Install button). */
     initialOpenCodePage: com.example.gemini.ui.opencode.OpenCodeSettingsPage? = null,
     codex: com.example.gemini.data.agent.codex.CodexChatBackend? = null,
-    /** Opens on this Codex page (e.g. Server & install from an Install button). */
+    /** Opens on this Codex page (e.g. Account & CLI from an Install button). */
     initialCodexPage: com.example.gemini.ui.codex.CodexSettingsPage? = null,
+    /** Antigravity's status and Google account, for its Account & CLI page (null: Antigravity is off). */
+    agyStatus: com.example.gemini.ui.agents.AgentStatusEntry? = null,
+    agyAuth: com.example.gemini.data.remote.AgyHubClient.AgyAuthInfo = com.example.gemini.data.remote.AgyHubClient.AgyAuthInfo(),
+    onAgySignOut: () -> Unit = {},
+    onAgyCancelSignIn: () -> Unit = {},
     /** Opens on this page (e.g. Jarvis asked to show it); also switches to it while the dialog is open. */
     initialSection: SettingsSection? = null,
     enabledAgents: Set<com.example.gemini.domain.model.AgentKind> = setOf(com.example.gemini.domain.model.AgentKind.AGY),
@@ -310,7 +355,11 @@ fun SettingsDialog(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var currentSection by remember { mutableStateOf(initialSection ?: if (initialClaudePage != null && claude != null) SettingsSection.CLAUDE_PAGE else SettingsSection.MAIN) }
+    // the Ubuntu chroot shown on its page (null: the one in use)
+    var chrootManagePath by remember { mutableStateOf<String?>(null) }
     var claudePage by remember { mutableStateOf(initialClaudePage ?: com.example.gemini.ui.claude.ClaudeSettingsPage.ACCOUNT) }
+    // Settings → Language → the texts of this language
+    var languageTextsId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(com.example.gemini.i18n.LanguageManager.currentId) }
     var openCodePage by remember { mutableStateOf(initialOpenCodePage ?: com.example.gemini.ui.opencode.OpenCodeSettingsPage.SERVER) }
     LaunchedEffect(initialOpenCodePage) {
         if (initialOpenCodePage != null && openCode != null) {
@@ -364,7 +413,7 @@ fun SettingsDialog(
                     val isCodexPage = currentSection == SettingsSection.CODEX_PAGE && codex != null
                     Column {
                         Text(
-                            text = if (isClaudePage) "Claude Code · ${claudePage.title}" else if (isOpenCodePage) "OpenCode · ${openCodePage.title}"
+                            text = if (isClaudePage) L.settings.dialog.claudeCodeTitle(claudePage.title) else if (isOpenCodePage) "OpenCode · ${openCodePage.title}"
                                 else if (isCodexPage) "Codex · ${codexPage.title}" else currentSection.title,
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
@@ -394,7 +443,7 @@ fun SettingsDialog(
                     }) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
+                            contentDescription = L.common.back,
                             tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
@@ -402,7 +451,7 @@ fun SettingsDialog(
                 actions = {
                     TextButton(onClick = onDismiss) {
                         Text(
-                            text = "Done",
+                            text = L.common.done,
                             color = ClaudeTerracotta,
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
@@ -436,7 +485,27 @@ fun SettingsDialog(
                     .weight(1f),
                 label = "SettingsSectionTransition"
             ) { section ->
-                when (section) {
+                // pages that use the Termux environment's tools: a notice while the Ubuntu chroot runs this phone
+                val termuxOnly = section in TERMUX_ONLY_SECTIONS && !com.example.gemini.data.preferences.AuthPreferences.currentRemoteMode &&
+                    com.example.gemini.data.local.chroot.ChrootManager.isActiveNow()
+                when (if (termuxOnly) SettingsSection.TERMUX_ONLY else section) {
+                    SettingsSection.TERMUX_ONLY -> com.example.gemini.ui.settings.chroot.TermuxOnlyNotice(section.title, cardBg, cardBorder,
+                        note = if (section == SettingsSection.BACKUPS) L.settings.dialog.theUbuntuChrootHasItsOwn else null) {
+                        currentSection = SettingsSection.SERVERS
+                    }
+                    SettingsSection.UBUNTU_CHROOT -> com.example.gemini.ui.settings.chroot.ChrootManageScreen(
+                        path = chrootManagePath,
+                        cardBg = cardBg,
+                        cardBorder = cardBorder,
+                        onOpenTerminal = {
+                            onOpenLocalTerminal()
+                            onDismiss()
+                        },
+                        onDeleted = {
+                            chrootManagePath = null
+                            currentSection = SettingsSection.SERVERS
+                        }
+                    )
                     SettingsSection.MAIN -> MainSettingsMenu(
                         themeMode = themeMode,
                         isServerOnline = isServerOnline,
@@ -454,6 +523,9 @@ fun SettingsDialog(
                         onNavigate = { currentSection = it }
                     )
 
+                    SettingsSection.LANGUAGE -> LanguageScreen(onOpenTexts = { languageTextsId = it; currentSection = SettingsSection.LANGUAGE_TEXTS })
+                    SettingsSection.LANGUAGE_TEXTS -> LanguageTextsScreen(languageTextsId, onOpen = { languageTextsId = it })
+
                     SettingsSection.THEMES -> ThemesSubScreen(
                         themeMode = themeMode,
                         cardBg = cardBg,
@@ -463,20 +535,26 @@ fun SettingsDialog(
 
                     SettingsSection.APPEARANCE -> AppearanceSubScreen(
                         chatFontScale = chatFontScale,
-                        groupChatsByWorkspace = groupChatsByWorkspace,
                         floatingSwitcherOrientation = floatingSwitcherOrientation,
                         floatingSwitcherItems = floatingSwitcherItems,
                         floatingSwitcherAutoCollapseSec = floatingSwitcherAutoCollapseSec,
                         cardBg = cardBg,
                         cardBorder = cardBorder,
                         onSetChatFontScale = onSetChatFontScale,
-                        onToggleGroupChatsByWorkspace = onToggleGroupChatsByWorkspace,
                         onSetFloatingSwitcherOrientation = onSetFloatingSwitcherOrientation,
+                        floatingSwitcherHandleIcon = floatingSwitcherHandleIcon,
+                        onSetFloatingSwitcherHandleIcon = onSetFloatingSwitcherHandleIcon,
                         onSetFloatingSwitcherItems = onSetFloatingSwitcherItems,
                         onSetFloatingSwitcherAutoCollapseSec = onSetFloatingSwitcherAutoCollapseSec,
                         onResetFloatingSwitcherPosition = onResetFloatingSwitcherPosition,
                         chatHeaderItems = chatHeaderItems,
-                        onSetChatHeaderItems = onSetChatHeaderItems
+                        onSetChatHeaderItems = onSetChatHeaderItems,
+                        groupAgentSteps = groupAgentSteps,
+                        onToggleGroupAgentSteps = onToggleGroupAgentSteps,
+                        groupStepsMin = groupStepsMin,
+                        onSetGroupStepsMin = onSetGroupStepsMin,
+                        showMessageStats = showMessageStats,
+                        onToggleShowMessageStats = onToggleShowMessageStats
                     )
 
                     // a PC in use (Connect to PC): the form would show the PC's values, so it waits for the switch back
@@ -489,7 +567,12 @@ fun SettingsDialog(
                         isBridgeOnline = isBridgeOnline,
                         cardBg = cardBg,
                         cardBorder = cardBorder,
-                        onSaveServerUrls = onSaveServerUrls
+                        onSaveServerUrls = onSaveServerUrls,
+                        onInstallTermux = onInstallLocalTools,
+                        onManageChroot = { path ->
+                            chrootManagePath = path
+                            currentSection = SettingsSection.UBUNTU_CHROOT
+                        }
                     )
 
                     SettingsSection.CONNECT_PC -> com.example.gemini.ui.pc.ConnectPcScreen(cardBg = cardBg, cardBorder = cardBorder)
@@ -568,7 +651,8 @@ fun SettingsDialog(
                         onInstallLocalTools = onInstallLocalTools,
                         onResetLocalTools = onResetLocalTools,
                         onSaveTerminalPreferences = onSaveTerminalPreferences,
-                        onOpenLocalTerminal = onOpenLocalTerminal
+                        onOpenLocalTerminal = onOpenLocalTerminal,
+                        onOpenRuntime = { currentSection = SettingsSection.SERVERS }
                     )
 
                     SettingsSection.BACKUPS -> BackupsSubScreen(
@@ -631,9 +715,14 @@ fun SettingsDialog(
                         enabled = enabledAgents,
                         isApplying = isApplyingAgents,
                         onApply = onApplyAgents,
-                        onOpenGlobalContext = { currentSection = SettingsSection.GLOBAL_CONTEXT }
+                        onOpenGlobalContext = { currentSection = SettingsSection.GLOBAL_CONTEXT },
+                        onOpenAgentMemory = { currentSection = SettingsSection.AGENT_MEMORY },
+                        onOpenEgm = { currentSection = SettingsSection.EGM }
                     )
                     SettingsSection.GLOBAL_CONTEXT -> GlobalContextScreen()
+                    SettingsSection.EGM -> EgmScreen(cardBg = cardBg, cardBorder = cardBorder)
+                    SettingsSection.AGENT_MEMORY -> AgentMemoryScreen(onOpenHistory = { currentSection = SettingsSection.AGENT_HISTORY })
+                    SettingsSection.AGENT_HISTORY -> AgentHistoryScreen()
                     SettingsSection.STEM_RENDERING -> StemRenderingScreen()
                     SettingsSection.JARVIS -> com.example.gemini.ui.jarvis.JarvisSettingsScreen(
                         cardBg = cardBg,
@@ -657,14 +746,32 @@ fun SettingsDialog(
                         onNavigate = { currentSection = it }
                     )
                     SettingsSection.AGY_CLI -> Column(
-                        Modifier.fillMaxSize().bouncyVerticalScroll(rememberScrollState()).padding(16.dp)
+                        Modifier.fillMaxSize().bouncyVerticalScroll(rememberScrollState()).padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         com.example.gemini.ui.agents.AgyCliCard()
+                        com.example.gemini.ui.agents.AgyAccountCard(agyStatus, agyAuth, onAgySignOut, onAgyCancelSignIn)
+                        com.example.gemini.ui.agents.AgyAccountsCard(agyStatus, agyAuth)
                     }
                     SettingsSection.AGY_CLOUD -> Column(
                         Modifier.fillMaxSize().bouncyVerticalScroll(rememberScrollState()).padding(16.dp)
                     ) {
                         com.example.gemini.ui.cloud.AgyCloudSettingsCard()
+                    }
+                    SettingsSection.AGY_VOICE -> Column(
+                        Modifier.fillMaxSize().bouncyVerticalScroll(rememberScrollState()).padding(16.dp)
+                    ) {
+                        com.example.gemini.ui.voice.AgyVoiceCallSettingsCard()
+                    }
+                    SettingsSection.HOME_SCREEN -> Column(
+                        Modifier.fillMaxSize().bouncyVerticalScroll(rememberScrollState()).padding(16.dp)
+                    ) {
+                        com.example.gemini.ui.homescreen.HomeScreenSettingsCard()
+                    }
+                    SettingsSection.FILE_PICKER -> Column(
+                        Modifier.fillMaxSize().bouncyVerticalScroll(rememberScrollState()).padding(16.dp)
+                    ) {
+                        com.example.gemini.ui.files.FilePickerSettingsCard()
                     }
                     SettingsSection.CLAUDE -> if (claude != null) {
                         com.example.gemini.ui.claude.ClaudeSettingsGroup(claude, cardBg) { page ->
@@ -766,6 +873,10 @@ fun SettingsDialog(
                         cardBg = cardBg,
                         cardBorder = cardBorder
                     )
+                    SettingsSection.UPDATES -> UpdateSettingsScreen(
+                        cardBg = cardBg,
+                        cardBorder = cardBorder
+                    )
                 }
             }
         }
@@ -801,13 +912,16 @@ private fun MainSettingsMenu(
     val codexOn = com.example.gemini.domain.model.AgentKind.CODEX in enabledAgents
     val codexState = codex?.state?.collectAsState()?.value
     val c = com.example.gemini.theme.AppColors
+    val appContext = LocalContext.current
+    // read again whenever the main page comes back (it leaves the composition while a page is open)
+    val filePickerOn = remember { com.example.gemini.data.files.AntiGemDocumentsProvider.isEnabled(appContext) }
     fun row(section: SettingsSection, icon: ImageVector, tint: Color, value: String? = null, valueColor: Color? = null) =
         SettingsRowItem(icon, tint, section.title, value, valueColor) { onNavigate(section) }
 
     val (serverValue, serverColor) = when {
-        isServerOnline && isBridgeOnline -> "Online" to QuotaGreen
-        isServerOnline || isBridgeOnline -> "Partial" to c.warning
-        else -> "Offline" to c.danger
+        isServerOnline && isBridgeOnline -> L.settings.dialog.online to QuotaGreen
+        isServerOnline || isBridgeOnline -> L.settings.dialog.partial to c.warning
+        else -> L.settings.dialog.offline to c.danger
     }
     val jarvisOn by com.example.gemini.data.jarvis.JarvisPreferences.enabled.state.collectAsState()
     // Project checkpoints: off / chosen projects / all git projects
@@ -815,10 +929,10 @@ private fun MainSettingsMenu(
     LaunchedEffect(Unit) { com.example.gemini.data.checkpoint.ProjectCheckpoints.refreshSettings() }
     val checkpointsRow = row(SettingsSection.PROJECT_CHECKPOINTS, Icons.Outlined.History, c.info,
         when (checkpointSettings?.mode) {
-            com.example.gemini.data.checkpoint.CheckpointSettings.MODE_SELECTED -> "Chosen projects"
-            com.example.gemini.data.checkpoint.CheckpointSettings.MODE_ALL -> "All projects"
+            com.example.gemini.data.checkpoint.CheckpointSettings.MODE_SELECTED -> L.settings.dialog.chosenProjects
+            com.example.gemini.data.checkpoint.CheckpointSettings.MODE_ALL -> L.common.allProjects
             null -> null
-            else -> "Off"
+            else -> L.common.off
         },
         if (checkpointSettings?.isOn == true) QuotaGreen else null)
     val activeMcp = mcpServers.count { it.isEnabled }
@@ -834,7 +948,7 @@ private fun MainSettingsMenu(
     val pcActiveId by com.example.gemini.data.pc.PcConnect.activeId.collectAsState()
     val pcInUse = pcList.firstOrNull { it.id == pcActiveId }?.takeIf { pcEnabled }
     val pcRow = row(SettingsSection.CONNECT_PC, Icons.Outlined.Computer, c.accentTeal,
-        when { !pcEnabled -> "Off"; pcInUse != null -> pcInUse.name; else -> "On" },
+        when { !pcEnabled -> L.common.off; pcInUse != null -> pcInUse.name; else -> L.common.on },
         if (pcInUse != null) QuotaGreen else null)
 
     // STEM & diagrams: whether the render bundle is installed
@@ -842,7 +956,7 @@ private fun MainSettingsMenu(
     remember { com.example.gemini.data.render.RenderBundle.init(stemContext) }
     val stemInstalled by com.example.gemini.data.render.RenderBundle.installed.collectAsState()
     val stemRow = row(SettingsSection.STEM_RENDERING, Icons.Outlined.Science, c.accentTeal,
-        if (stemInstalled) "Installed" else null, if (stemInstalled) QuotaGreen else null)
+        if (stemInstalled) L.common.installed else null, if (stemInstalled) QuotaGreen else null)
 
     // Claude Code's row shows the account state (signed in / plan / signed out)
     var claudeValue: String? = null
@@ -853,8 +967,8 @@ private fun MainSettingsMenu(
         LaunchedEffect(Unit) { if (status == null) claude.account.refreshStatus() }
         claudeValue = when (state) {
             com.example.gemini.data.agent.claude.ClaudeStatus.READY ->
-                status?.auth?.subscriptionType?.let { com.example.gemini.ui.agents.claudePlanLabel(it) } ?: "Signed in"
-            com.example.gemini.data.agent.claude.ClaudeStatus.SIGNED_OUT -> "Signed out"
+                status?.auth?.subscriptionType?.let { com.example.gemini.ui.agents.claudePlanLabel(it) } ?: L.common.signedIn
+            com.example.gemini.data.agent.claude.ClaudeStatus.SIGNED_OUT -> L.settings.dialog.signedOut
             else -> state.label
         }
         claudeColor = state.dotColor
@@ -866,28 +980,38 @@ private fun MainSettingsMenu(
         groups = listOf(
             listOf(
                 row(SettingsSection.THEMES, Icons.Outlined.Palette, c.accentPink, com.example.gemini.theme.ThemeManager.current.name),
+                row(SettingsSection.LANGUAGE, Icons.Outlined.Translate, c.accentTeal,
+                    com.example.gemini.i18n.LanguageManager.currentId.let { id -> com.example.gemini.i18n.LanguageManager.languages.firstOrNull { it.id == id }?.name ?: if (id == com.example.gemini.i18n.LanguageManager.ENGLISH) L.settings.dialog.english else id }),
                 row(SettingsSection.APPEARANCE, Icons.Outlined.Tune, c.accentAlt),
+                row(SettingsSection.HOME_SCREEN, Icons.Outlined.Widgets, c.accentTeal),
+                row(SettingsSection.FILE_PICKER, Icons.Outlined.FolderShared, c.warning, if (filePickerOn) L.common.on else L.common.off),
                 stemRow,
-                row(SettingsSection.SERVERS, Icons.Outlined.Dns, c.info, serverValue, serverColor),
+                // where agents run (Termux, Ubuntu chroot or a server), and whether the app reaches it
+                row(SettingsSection.SERVERS, Icons.Outlined.Dns, c.info,
+                    when {
+                        com.example.gemini.data.preferences.AuthPreferences.currentRemoteMode -> L.common.server
+                        com.example.gemini.data.local.chroot.ChrootManager.isActiveNow() -> L.common.ubuntuChroot
+                        else -> "AntiGem"
+                    } + if (serverColor == QuotaGreen) "" else " · $serverValue", serverColor),
                 pcRow
             ),
             listOfNotNull(
                 row(SettingsSection.AGENTS, Icons.Outlined.SmartToy, MaterialTheme.colorScheme.primary, when {
-                    enabledAgents.size == com.example.gemini.domain.model.AgentKind.entries.size -> "All agents"
+                    enabledAgents.size == com.example.gemini.domain.model.AgentKind.entries.size -> L.settings.dialog.allAgents
                     enabledAgents.size >= 3 -> "${enabledAgents.size} agents"
                     enabledAgents.size == 2 -> com.example.gemini.domain.model.AgentKind.entries.filter { it in enabledAgents }
                         .joinToString(" + ") {
                             when (it) {
                                 com.example.gemini.domain.model.AgentKind.AGY -> "AGY"
-                                com.example.gemini.domain.model.AgentKind.CLAUDE -> "Claude"
+                                com.example.gemini.domain.model.AgentKind.CLAUDE -> L.common.claude
                                 com.example.gemini.domain.model.AgentKind.OPENCODE -> "OpenCode"
-                                com.example.gemini.domain.model.AgentKind.CODEX -> "Codex"
+                                com.example.gemini.domain.model.AgentKind.CODEX -> L.common.codex
                             }
                         }
-                    claudeOn -> "Claude Code"
+                    claudeOn -> L.common.claudeCode
                     openCodeOn -> "OpenCode"
-                    codexOn -> "Codex"
-                    else -> "Antigravity"
+                    codexOn -> L.common.codex
+                    else -> L.common.antigravity
                 }),
                 if (agyOn) row(SettingsSection.ANTIGRAVITY, Icons.Outlined.RocketLaunch, GeminiBlue,
                     if (activeMcp > 0) "$activeMcp MCP" else null) else null,
@@ -896,7 +1020,7 @@ private fun MainSettingsMenu(
                     if (openCodeState == com.example.gemini.data.agent.opencode.OpenCodeState.READY) QuotaGreen else c.warning) else null,
                 if (codex != null && codexOn) row(SettingsSection.CODEX, Icons.Outlined.Terminal, com.example.gemini.ui.components.CodexAccent, codexState?.label,
                     if (codexState == com.example.gemini.data.agent.codex.CodexState.READY) QuotaGreen else c.warning) else null,
-                row(SettingsSection.JARVIS, Icons.Outlined.RecordVoiceOver, c.accentTeal, if (jarvisOn) "On" else "Off",
+                row(SettingsSection.JARVIS, Icons.Outlined.RecordVoiceOver, c.accentTeal, if (jarvisOn) L.common.on else L.common.off,
                     if (jarvisOn) QuotaGreen else null)
             ),
             listOf(
@@ -906,22 +1030,20 @@ private fun MainSettingsMenu(
             ),
             listOfNotNull(
                 row(SettingsSection.TERMINAL, Icons.Outlined.Terminal, c.accentIndigo,
-                    if (useSshTerminal || com.example.gemini.data.preferences.AuthPreferences.currentRemoteMode) "SSH" else "Local"),
+                    if (useSshTerminal || com.example.gemini.data.preferences.AuthPreferences.currentRemoteMode) "SSH" else L.settings.dialog.local),
                 githubRow,
                 deviceTools.adb,
                 deviceTools.automation,
                 reaRow,
                 androidDevRow,
-                // Termux:API and X11 need the com.termux package; shown on both of its builds (and before the terminal is
-                // installed) so standalone users learn these exist: each page explains the Shared UID build they need
-                if (com.example.gemini.data.local.LocalEnvironmentManager.isTermuxPackage(LocalContext.current))
-                    row(SettingsSection.TERMUX_SUPPORT, Icons.Outlined.Cable, c.accentIndigo,
-                        if (BuildConfig.IS_SHARED_USER_ID) null else "Standalone",
-                        if (BuildConfig.IS_SHARED_USER_ID) null else c.warning) else null,
+                // Termux:API and X11, used by the Termux packages in the terminal; with the Ubuntu chroot only X11
+                // works (Termux Support is Termux-only there), so its row takes the place of the menu
+                if (chrootRunsPhone()) rememberX11Row(onNavigate)
+                else row(SettingsSection.TERMUX_SUPPORT, Icons.Outlined.Cable, c.accentIndigo),
                 // Utilities only shows once it has something in it (its old items are rows of their own now)
                 if (utilityRows(onNavigate).isNotEmpty()) row(SettingsSection.UTILITIES, Icons.Outlined.Handyman, c.accentTeal) else null,
                 row(SettingsSection.DIAGNOSTICS, Icons.Outlined.Speed, c.success,
-                    if (isFloatingDiagnosticsEnabled) "HUD on" else null, if (isFloatingDiagnosticsEnabled) QuotaGreen else null)
+                    if (isFloatingDiagnosticsEnabled) L.settings.dialog.hudOn else null, if (isFloatingDiagnosticsEnabled) QuotaGreen else null)
             ),
             listOfNotNull(
                 // backups are of the phone's own Linux environment, so only with it installed and not in server mode
@@ -930,6 +1052,7 @@ private fun MainSettingsMenu(
                 row(SettingsSection.DATA_PROTECTION, Icons.Outlined.Security, c.success)
             ),
             listOf(
+                row(SettingsSection.UPDATES, Icons.Outlined.SystemUpdateAlt, c.info),
                 row(SettingsSection.ABOUT, Icons.Outlined.Info, c.accentAlt, "v${BuildConfig.VERSION_NAME}")
             )
         )
@@ -949,43 +1072,46 @@ private fun AntigravitySettingsMenu(
     val c = com.example.gemini.theme.AppColors
     val activeMcp = mcpServers.count { it.isEnabled }
     val (mcpValue, mcpColor) = when {
-        mcpServers.isEmpty() -> "None" to null
-        activeMcp > 0 -> "$activeMcp active" to QuotaGreen
-        else -> "All off" to c.warning
+        mcpServers.isEmpty() -> L.settings.dialog.none to null
+        activeMcp > 0 -> L.settings.dialog.countActive(activeMcp) to QuotaGreen
+        else -> L.settings.dialog.allOff to c.warning
     }
     val (policyValue, policyColor) = when {
-        commandAutoExecutionPolicy.contains("EAGER", ignoreCase = true) -> "Auto-run" to QuotaGreen
-        commandAutoExecutionPolicy.contains("AUTO", ignoreCase = true) -> "Smart safety" to c.accentTeal
-        else -> "Ask first" to c.warning
+        commandAutoExecutionPolicy.contains("EAGER", ignoreCase = true) -> L.settings.dialog.autoRun to QuotaGreen
+        commandAutoExecutionPolicy.contains("AUTO", ignoreCase = true) -> L.settings.dialog.smartSafety to c.accentTeal
+        else -> L.common.askFirst to c.warning
     }
     // the CLI row shows the installed version (like Claude Code's Account & CLI row)
     val cli by com.example.gemini.data.remote.BridgeInfo.agyCli.collectAsState()
     LaunchedEffect(Unit) { if (cli == null) com.example.gemini.data.remote.BridgeInfo.refreshAgyCli() }
     val (cliValue, cliColor) = when {
         cli == null -> null to null
-        cli!!.installed -> cli!!.version.ifBlank { "Installed" } to QuotaGreen
-        else -> "Not installed" to c.warning
+        cli!!.installed -> cli!!.version.ifBlank { L.common.installed } to QuotaGreen
+        else -> L.common.notInstalled to c.warning
     }
     val cloudOn by com.example.gemini.data.agent.agy.AgyCloud.enabled.collectAsState()
+    val voiceBubbleOn by com.example.gemini.data.voice.AgyVoicePreferences.bubble.collectAsState()
     SettingsRowList(
         cardBg = cardBg,
         groups = listOf(
             listOf(
                 SettingsRowItem(Icons.Outlined.Terminal, GeminiBlue, SettingsSection.AGY_CLI.title, cliValue, cliColor) { onNavigate(SettingsSection.AGY_CLI) },
                 SettingsRowItem(Icons.Outlined.Cloud, GeminiBlue, SettingsSection.AGY_CLOUD.title,
-                    if (cloudOn) "On" else "Off", if (cloudOn) QuotaGreen else null) { onNavigate(SettingsSection.AGY_CLOUD) }
+                    if (cloudOn) L.common.on else L.common.off, if (cloudOn) QuotaGreen else null) { onNavigate(SettingsSection.AGY_CLOUD) },
+                SettingsRowItem(Icons.Outlined.HeadsetMic, GeminiBlue, SettingsSection.AGY_VOICE.title,
+                    if (voiceBubbleOn) L.settings.dialog.floatingOn else null, if (voiceBubbleOn) QuotaGreen else null) { onNavigate(SettingsSection.AGY_VOICE) }
             ),
             listOf(
                 SettingsRowItem(Icons.Outlined.Hub, GeminiBlue, SettingsSection.MCP.title, mcpValue, mcpColor) { onNavigate(SettingsSection.MCP) },
                 SettingsRowItem(Icons.Outlined.AutoAwesome, c.accentAlt, SettingsSection.SKILLS_PLUGINS.title,
-                    "${allSkills.size} skills · ${installedPlugins.size} plugins") { onNavigate(SettingsSection.SKILLS_PLUGINS) },
+                    L.settings.dialog.allskillscountSkills(allSkills.size, installedPlugins.size)) { onNavigate(SettingsSection.SKILLS_PLUGINS) },
                 SettingsRowItem(Icons.Outlined.Security, c.warning, SettingsSection.COMMANDS.title, policyValue, policyColor) { onNavigate(SettingsSection.COMMANDS) }
             )
         )
     )
 }
 
-/** Settings → Termux Support: the features that work with Termux companion apps (they need the Shared UID build). */
+/** Settings → Termux Support: the features that work with Termux companion apps (they share AntiGem's UID). */
 @Composable
 private fun TermuxSupportMenu(
     cardBg: Color,
@@ -993,17 +1119,15 @@ private fun TermuxSupportMenu(
 ) {
     val context = LocalContext.current
     val c = com.example.gemini.theme.AppColors
-    val shared = BuildConfig.IS_SHARED_USER_ID
     LaunchedEffect(Unit) {
         com.example.gemini.data.x11.X11DesktopManager.init(context)
         com.example.gemini.data.x11.X11DesktopManager.refresh()
     }
     val x11 by com.example.gemini.data.x11.X11DesktopManager.state.collectAsState()
-    val apiExternal = com.example.gemini.data.local.LocalEnvironmentManager.getTermuxApiProvider(context) ==
-        com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_EXTERNAL
+    val apiMode = if (com.example.gemini.data.local.LocalEnvironmentManager.getTermuxApiProvider(context) ==
+        com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_EXTERNAL) L.settings.dialog.termuxApiApp else L.common.builtIn
     val (x11Value, x11Color) = when {
-        !shared -> "Needs Shared UID" to c.warning
-        x11.running -> "Running" to QuotaGreen
+        x11.running -> L.common.running to QuotaGreen
         else -> null to null
     }
     SettingsRowList(
@@ -1011,12 +1135,28 @@ private fun TermuxSupportMenu(
         groups = listOf(
             listOf(
                 SettingsRowItem(Icons.Outlined.Api, c.accentTeal, SettingsSection.TERMUX_API.title,
-                    if (apiExternal) "External app" else "Built-in") { onNavigate(SettingsSection.TERMUX_API) },
+                    apiMode) { onNavigate(SettingsSection.TERMUX_API) },
                 SettingsRowItem(Icons.Outlined.DesktopWindows, c.accentIndigo, SettingsSection.X11_DESKTOP.title,
                     x11Value, x11Color) { onNavigate(SettingsSection.X11_DESKTOP) }
             )
         )
     )
+}
+
+/** The X11 Desktop row of the main settings page (Ubuntu chroot mode), with whether the X server runs. */
+@Composable
+private fun rememberX11Row(onNavigate: (SettingsSection) -> Unit): SettingsRowItem {
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        com.example.gemini.data.x11.X11DesktopManager.init(context)
+        com.example.gemini.data.x11.X11DesktopManager.refresh()
+    }
+    val x11 by com.example.gemini.data.x11.X11DesktopManager.state.collectAsState()
+    val c = com.example.gemini.theme.AppColors
+    return SettingsRowItem(Icons.Outlined.DesktopWindows, c.accentIndigo, SettingsSection.X11_DESKTOP.title,
+        if (x11.running) L.common.running else null, if (x11.running) QuotaGreen else null) {
+        onNavigate(SettingsSection.X11_DESKTOP)
+    }
 }
 
 /** What Settings → Utilities lists. Empty for now: when it is, the Utilities row is hidden. Add future handy tools here. */
@@ -1030,11 +1170,10 @@ private fun UtilitiesSubScreen(
     SettingsRowList(cardBg = cardBg, groups = listOf(utilityRows(onNavigate)))
 }
 
-/** The GitHub row of the main settings page (com.termux builds only), with the sign-in state; null elsewhere. */
+/** The GitHub row of the main settings page, with the sign-in state. */
 @Composable
 private fun rememberGitHubRow(onNavigate: (SettingsSection) -> Unit): SettingsRowItem? {
     val context = LocalContext.current
-    if (!com.example.gemini.data.local.LocalEnvironmentManager.isTermuxPackage(context)) return null
     LaunchedEffect(Unit) {
         com.example.gemini.data.github.GitHubManager.init(context)
         com.example.gemini.data.github.GitHubManager.refreshIfStale()
@@ -1042,9 +1181,9 @@ private fun rememberGitHubRow(onNavigate: (SettingsSection) -> Unit): SettingsRo
     val gh by com.example.gemini.data.github.GitHubManager.state.collectAsState()
     val c = com.example.gemini.theme.AppColors
     val (value, color) = when {
-        gh.signedIn -> (gh.account?.login ?: "Signed in") to QuotaGreen
-        gh.ghInstalled == false -> "Not installed" to c.warning
-        gh.ghInstalled == true -> "Signed out" to null
+        gh.signedIn -> (gh.account?.login ?: L.common.signedIn) to QuotaGreen
+        gh.ghInstalled == false -> L.common.notInstalled to c.warning
+        gh.ghInstalled == true -> L.settings.dialog.signedOut to null
         else -> null to null
     }
     return SettingsRowItem(Icons.Outlined.AccountTree, c.accentAlt, SettingsSection.GITHUB.title, value, color) {
@@ -1052,11 +1191,10 @@ private fun rememberGitHubRow(onNavigate: (SettingsSection) -> Unit): SettingsRo
     }
 }
 
-/** The REA row of the main settings page (com.termux builds only), with the setup state; null elsewhere. */
+/** The REA row of the main settings page, with the setup state. */
 @Composable
 private fun rememberReaRow(onNavigate: (SettingsSection) -> Unit): SettingsRowItem? {
     val context = LocalContext.current
-    if (!com.example.gemini.data.local.LocalEnvironmentManager.isTermuxPackage(context)) return null
     LaunchedEffect(Unit) {
         com.example.gemini.data.rea.ReaManager.init(context)
         com.example.gemini.data.rea.ReaManager.refresh()
@@ -1064,9 +1202,9 @@ private fun rememberReaRow(onNavigate: (SettingsSection) -> Unit): SettingsRowIt
     val rea by com.example.gemini.data.rea.ReaManager.state.collectAsState()
     val c = com.example.gemini.theme.AppColors
     val (value, color) = when {
-        rea.busy -> "Installing…" to c.info
-        rea.usable && rea.requiredDone -> (rea.reaVersion?.let { "v$it" } ?: "Ready") to QuotaGreen
-        rea.installed.isNotEmpty() -> "Partly set up" to c.warning
+        rea.busy -> L.common.installing to c.info
+        rea.usable && rea.requiredDone -> (rea.reaVersion?.let { "v$it" } ?: L.common.ready) to QuotaGreen
+        rea.installed.isNotEmpty() -> L.common.partlySetUp to c.warning
         else -> null to null
     }
     return SettingsRowItem(Icons.Outlined.BugReport, c.accentPink, SettingsSection.REA.title, value, color) {
@@ -1074,11 +1212,12 @@ private fun rememberReaRow(onNavigate: (SettingsSection) -> Unit): SettingsRowIt
     }
 }
 
-/** The Android Development row of the main settings page (com.termux builds only), with the setup state; null elsewhere. */
+/** The Android Development row of the main settings page, with the setup state. */
 @Composable
 private fun rememberAndroidDevRow(onNavigate: (SettingsSection) -> Unit): SettingsRowItem? {
+    // its setup (arm64 aapt2, rebuilt NDK, qemu for x86-only tools) is for arm64 phones only: hidden in the x86_64 build
+    if (com.example.gemini.BuildConfig.TARGET_ABI == "x86_64") return null
     val context = LocalContext.current
-    if (!com.example.gemini.data.local.LocalEnvironmentManager.isTermuxPackage(context)) return null
     LaunchedEffect(Unit) {
         com.example.gemini.data.androiddev.AndroidDevManager.init(context)
         com.example.gemini.data.androiddev.AndroidDevManager.refresh()
@@ -1086,14 +1225,14 @@ private fun rememberAndroidDevRow(onNavigate: (SettingsSection) -> Unit): Settin
     val dev by com.example.gemini.data.androiddev.AndroidDevManager.state.collectAsState()
     val c = com.example.gemini.theme.AppColors
     val (value, color) = when {
-        dev.busy -> "Working…" to c.info
+        dev.busy -> L.common.working to c.info
         dev.anyReady -> com.example.gemini.data.androiddev.AndroidDevManager.Framework.entries.filter { dev.ready(it) }
             .joinToString(" · ") { when (it) {
-                com.example.gemini.data.androiddev.AndroidDevManager.Framework.KOTLIN -> "Kotlin"
-                com.example.gemini.data.androiddev.AndroidDevManager.Framework.FLUTTER -> "Flutter"
+                com.example.gemini.data.androiddev.AndroidDevManager.Framework.KOTLIN -> L.settings.dialog.kotlin
+                com.example.gemini.data.androiddev.AndroidDevManager.Framework.FLUTTER -> L.settings.dialog.flutter
                 com.example.gemini.data.androiddev.AndroidDevManager.Framework.REACT_NATIVE -> "RN"
             } } to QuotaGreen
-        dev.installed.any { it == com.example.gemini.data.androiddev.AndroidDevManager.Component.SDK || it == com.example.gemini.data.androiddev.AndroidDevManager.Component.LAUNCHER } -> "Partly set up" to c.warning
+        dev.installed.any { it == com.example.gemini.data.androiddev.AndroidDevManager.Component.SDK || it == com.example.gemini.data.androiddev.AndroidDevManager.Component.LAUNCHER } -> L.common.partlySetUp to c.warning
         else -> null to null
     }
     return SettingsRowItem(Icons.Outlined.Android, c.success, SettingsSection.ANDROID_DEV.title, value, color) {
@@ -1109,10 +1248,15 @@ private fun rememberDeviceToolRows(onNavigate: (SettingsSection) -> Unit): Devic
     val context = LocalContext.current
     LaunchedEffect(Unit) {
         com.example.gemini.data.adb.AdbConnectManager.init(context)
+        com.example.gemini.data.adb.DeviceAccess.init(context)
         com.example.gemini.data.adb.AdbConnectManager.refresh()
+        com.example.gemini.data.adb.ShizukuShell.refresh()
     }
     val adb by com.example.gemini.data.adb.AdbConnectManager.state.collectAsState()
     val connected = adb.connectedDevice
+    val accessMode by com.example.gemini.data.adb.DeviceAccess.mode.collectAsState()
+    val shizuku by com.example.gemini.data.adb.ShizukuShell.status.collectAsState()
+    val root by com.example.gemini.data.adb.RootShell.state.collectAsState()
     var automationAllowed by remember { mutableStateOf(com.example.gemini.data.automation.AndroidAutomation.isServiceRunning()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -1124,32 +1268,67 @@ private fun rememberDeviceToolRows(onNavigate: (SettingsSection) -> Unit): Devic
     return DeviceToolRows(
         adb = SettingsRowItem(
             Icons.Outlined.PhonelinkSetup, c.accentTeal, SettingsSection.ADB_CONNECT.title,
-            when {
-                connected != null -> "Connected"
-                adb.adbInstalled == false -> "Not installed"
-                else -> null
+            when (accessMode) {
+                com.example.gemini.data.adb.DeviceAccess.Mode.ADB -> when {
+                    connected != null -> L.settings.dialog.connected
+                    adb.adbInstalled == false -> L.common.notInstalled
+                    else -> null
+                }
+                com.example.gemini.data.adb.DeviceAccess.Mode.SHIZUKU -> if (shizuku.ready) L.settings.dialog.shizuku else L.settings.dialog.shizukuNotReady
+                com.example.gemini.data.adb.DeviceAccess.Mode.ROOT ->
+                    if (root.check == com.example.gemini.data.adb.RootShell.Check.GRANTED) L.common.root else L.settings.dialog.rootNotGranted
             },
-            if (connected != null) QuotaGreen else if (adb.adbInstalled == false) c.warning else null
+            when (accessMode) {
+                com.example.gemini.data.adb.DeviceAccess.Mode.ADB ->
+                    if (connected != null) QuotaGreen else if (adb.adbInstalled == false) c.warning else null
+                com.example.gemini.data.adb.DeviceAccess.Mode.SHIZUKU -> if (shizuku.ready) QuotaGreen else c.warning
+                com.example.gemini.data.adb.DeviceAccess.Mode.ROOT ->
+                    if (root.check == com.example.gemini.data.adb.RootShell.Check.GRANTED) QuotaGreen else c.warning
+            }
         ) { onNavigate(SettingsSection.ADB_CONNECT) },
         automation = SettingsRowItem(
             Icons.Outlined.TouchApp, c.accentAlt, SettingsSection.ANDROID_AUTOMATION.title,
-            if (automationAllowed) "Allowed" else "Off", if (automationAllowed) QuotaGreen else null
+            if (automationAllowed) L.common.allowed else L.common.off, if (automationAllowed) QuotaGreen else null
         ) { onNavigate(SettingsSection.ANDROID_AUTOMATION) }
     )
 }
 
 /**
  * Settings → Termux Support → Termux:API: how termux-api commands are handled, by AntiGem's built-in
- * handlers or by the external Termux:API companion app (that one needs the Shared UID build).
+ * handlers or by the external Termux:API companion app (it shares AntiGem's UID).
  */
 @Composable
 private fun TermuxApiSubScreen(cardBg: Color, cardBorder: BorderStroke) {
     val context = LocalContext.current
-    var termuxApiProviderState by remember {
-        mutableStateOf(com.example.gemini.data.local.LocalEnvironmentManager.getTermuxApiProvider(context))
-    }
-    var showExternalApiInstructionDialog by remember { mutableStateOf(false) }
+    val env = com.example.gemini.data.local.LocalEnvironmentManager
+    val scope = rememberCoroutineScope()
+    var mode by remember { mutableStateOf(env.getTermuxApiProvider(context)) }
     var activeCommandExecution by remember { mutableStateOf<Pair<String, String>?>(null) }
+    // both can change outside this page (an install in the terminal, the app installed from its APK): re-checked
+    var packageInstalled by remember { mutableStateOf(env.isTermuxApiPackageInstalled(context)) }
+    var appInstalled by remember { mutableStateOf(env.isTermuxApiAppInstalled(context)) }
+    // pkg only runs inside the local environment: without it the package can't be installed from here
+    var envInstalled by remember { mutableStateOf(env.isTermuxInstalled(context)) }
+    LaunchedEffect(activeCommandExecution) {
+        while (true) {
+            envInstalled = withContext(Dispatchers.IO) { env.isTermuxInstalled(context) }
+            packageInstalled = withContext(Dispatchers.IO) { env.isTermuxApiPackageInstalled(context) }
+            val nowInstalled = withContext(Dispatchers.IO) { env.isTermuxApiAppInstalled(context) }
+            if (nowInstalled != appInstalled) {
+                appInstalled = nowInstalled
+                // the dispatcher says whether the app is installed: rewritten now, not only at the next start
+                withContext(Dispatchers.IO) { env.ensureTermuxApiDispatcher(context) }
+            }
+            delay(2000)
+        }
+    }
+    val apiApp = env.termuxApiAppPackage(context)
+
+    fun choose(newMode: String) {
+        if (mode == newMode) return
+        mode = newMode
+        scope.launch(Dispatchers.IO) { env.setTermuxApiProvider(context, newMode) }
+    }
 
     Column(
         modifier = Modifier
@@ -1158,8 +1337,6 @@ private fun TermuxApiSubScreen(cardBg: Color, cardBorder: BorderStroke) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        if (!BuildConfig.IS_SHARED_USER_ID) SharedUidRequiredCard("The external Termux:API app", cardBg, cardBorder)
-
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
@@ -1168,251 +1345,152 @@ private fun TermuxApiSubScreen(cardBg: Color, cardBorder: BorderStroke) {
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    text = "Select how Termux API commands (termux-toast, termux-clipboard, termux-location, etc.) are handled.",
+                    text = L.settings.dialog.whoHandlesTheTermuxCommandsTermux,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-
-                // Option 1: Built-in
-                val isBuiltin = termuxApiProviderState == com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_BUILTIN
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable {
-                            if (!isBuiltin) {
-                                termuxApiProviderState = com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_BUILTIN
-                                com.example.gemini.data.local.LocalEnvironmentManager.setTermuxApiProvider(
-                                    context,
-                                    com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_BUILTIN
-                                )
-                                android.widget.Toast.makeText(context, "Built-in Termux API restored", android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (isBuiltin) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, if (isBuiltin) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = isBuiltin,
-                            onClick = {
-                                if (!isBuiltin) {
-                                    termuxApiProviderState = com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_BUILTIN
-                                    com.example.gemini.data.local.LocalEnvironmentManager.setTermuxApiProvider(
-                                        context,
-                                        com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_BUILTIN
-                                    )
-                                    android.widget.Toast.makeText(context, "Built-in Termux API restored", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            colors = RadioButtonDefaults.colors(selectedColor = ClaudeTerracotta)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(
-                                text = "Built-in (Zero-setup)",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.5.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Lightweight native handlers for clipboard, toast, torch, vibration, TTS, battery, volume, and notifications.",
-                                fontSize = 11.5.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-
-                // Option 2: External App
-                val isExternal = termuxApiProviderState == com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_EXTERNAL
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable(enabled = BuildConfig.IS_SHARED_USER_ID) {
-                            if (!isExternal) {
-                                termuxApiProviderState = com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_EXTERNAL
-                                com.example.gemini.data.local.LocalEnvironmentManager.setTermuxApiProvider(
-                                    context,
-                                    com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_EXTERNAL
-                                )
-                                showExternalApiInstructionDialog = true
-                            }
-                        },
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (isExternal) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, if (isExternal) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = isExternal,
-                            enabled = BuildConfig.IS_SHARED_USER_ID,
-                            onClick = {
-                                if (!isExternal) {
-                                    termuxApiProviderState = com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_EXTERNAL
-                                    com.example.gemini.data.local.LocalEnvironmentManager.setTermuxApiProvider(
-                                        context,
-                                        com.example.gemini.data.local.LocalEnvironmentManager.TERMUX_API_PROVIDER_EXTERNAL
-                                    )
-                                    showExternalApiInstructionDialog = true
-                                }
-                            },
-                            colors = RadioButtonDefaults.colors(selectedColor = ClaudeTerracotta)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(
-                                text = "External Termux:API App",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.5.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Uses your signed Termux:API companion APK for all hardware APIs (Location, Camera, Sensors, SMS, etc.).",
-                                fontSize = 11.5.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-
-                            if (isExternal) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            activeCommandExecution = "Reinstall Termux:API Package" to "pkg reinstall -y termux-api"
-                                        },
-                                        shape = RoundedCornerShape(8.dp),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        border = BorderStroke(1.dp, ClaudeTerracotta.copy(alpha = 0.5f))
-                                    ) {
-                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(13.dp), tint = ClaudeTerracotta)
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Reinstall Package", fontSize = 11.sp, color = ClaudeTerracotta, fontWeight = FontWeight.SemiBold)
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = {
-                                            try {
-                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/santoshkurmi/termux-api/releases"))
-                                                context.startActivity(intent)
-                                            } catch (_: Exception) {}
-                                        },
-                                        shape = RoundedCornerShape(8.dp),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f))
-                                    ) {
-                                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(13.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Get APK", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                TermuxApiModeOption(
+                    selected = mode == env.TERMUX_API_PROVIDER_BUILTIN,
+                    title = L.common.builtIn,
+                    tag = "No app needed",
+                    description = L.settings.dialog.antigemHandlesClipboardToastTorch,
+                    enabled = true,
+                    onClick = { choose(env.TERMUX_API_PROVIDER_BUILTIN) }
+                )
+                TermuxApiModeOption(
+                    selected = mode == env.TERMUX_API_PROVIDER_EXTERNAL,
+                    title = L.settings.dialog.antigemsTermuxApiApp,
+                    tag = if (appInstalled) null else "Install it first",
+                    description = "Every termux-* command goes to the app ($apiApp), all of them supported.",
+                    enabled = appInstalled || mode == env.TERMUX_API_PROVIDER_EXTERNAL,
+                    onClick = { choose(env.TERMUX_API_PROVIDER_EXTERNAL) }
+                )
+                if (mode == env.TERMUX_API_PROVIDER_EXTERNAL && !appInstalled) {
+                    Text(
+                        text = L.settings.dialog.theAppIsntInstalledTermuxCommands,
+                        fontSize = 11.5.sp,
+                        color = com.example.gemini.theme.AppColors.warning
+                    )
                 }
             }
         }
-    }
 
-    if (showExternalApiInstructionDialog) {
-        AlertDialog(
-            onDismissRequest = { showExternalApiInstructionDialog = false },
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = null,
-                    tint = ClaudeTerracotta,
-                    modifier = Modifier.size(28.dp)
-                )
-            },
-            title = {
-                Text(
-                    text = "Setup External Termux:API",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "To use the external companion app, the official Termux API binary must be reinstalled so that UNIX domain socket communication is restored.",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(
-                                text = "1. Reinstall official package: pkg reinstall termux-api",
-                                fontSize = 11.5.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "2. Install your signed Termux:API companion APK.",
-                                fontSize = 11.5.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = cardBg),
+            border = cardBorder
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                TermuxApiStatusRow(
+                    title = "termux-api package",
+                    detail = L.settings.dialog.theTermuxCommandsInTheTerminal,
+                    installed = packageInstalled
+                ) {
+                    if (envInstalled) {
+                        OutlinedButton(
+                            onClick = { activeCommandExecution = L.settings.dialog.installTermuxApi to "pkg install -y termux-api" },
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) { Text(L.common.install, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                    } else {
+                        Text(
+                            text = L.settings.dialog.installTheLocalEnvironmentFirst,
+                            modifier = Modifier.widthIn(max = 130.dp),
+                            fontSize = 11.5.sp,
+                            lineHeight = 15.sp,
+                            textAlign = TextAlign.End,
+                            color = com.example.gemini.theme.AppColors.warning
+                        )
                     }
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showExternalApiInstructionDialog = false
-                        activeCommandExecution = "Reinstall Termux:API Package" to "pkg reinstall -y termux-api"
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta),
-                    shape = RoundedCornerShape(8.dp)
+                TermuxApiStatusRow(
+                    title = L.settings.dialog.antigemsTermuxApiApp,
+                    detail = "Location, camera, sensors, SMS and the other commands ($apiApp)",
+                    installed = appInstalled
                 ) {
-                    Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Reinstall Now", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = {
                             try {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/santoshkurmi/termux-api/releases"))
-                                context.startActivity(intent)
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/santoshkurmi/termux-api/releases")))
                             } catch (_: Exception) {}
                         },
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Get APK")
-                    }
-                    TextButton(
-                        onClick = { showExternalApiInstructionDialog = false }
-                    ) {
-                        Text("Close")
-                    }
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) { Text(L.settings.dialog.getTheApp, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
                 }
-            },
-            shape = RoundedCornerShape(16.dp),
-            containerColor = MaterialTheme.colorScheme.surface
-        )
+            }
+        }
     }
 
     activeCommandExecution?.let { (title, cmd) ->
         CommandExecutionDialog(
             title = title,
             command = cmd,
-            onDismiss = { activeCommandExecution = null }
+            onDismiss = {
+                activeCommandExecution = null
+                // a package just installed: its own libexec/termux-api is moved aside and AntiGem's put back
+                scope.launch(Dispatchers.IO) { env.ensureTermuxApiDispatcher(context) }
+            }
         )
+    }
+}
+
+/** One choice of the Termux:API page: radio button, title (with an optional tag) and what it does. */
+@Composable
+private fun TermuxApiModeOption(
+    selected: Boolean,
+    title: String,
+    tag: String?,
+    description: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .alpha(if (enabled) 1f else 0.55f)
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, if (selected) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+    ) {
+        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = selected, onClick = onClick, enabled = enabled, colors = RadioButtonDefaults.colors(selectedColor = ClaudeTerracotta))
+            Spacer(modifier = Modifier.width(8.dp))
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = MaterialTheme.colorScheme.onSurface)
+                    if (tag != null) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(tag, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = ClaudeTerracotta)
+                    }
+                }
+                Text(description, fontSize = 11.5.sp, lineHeight = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+/** Installed or not, with an action ([action]) shown only when it isn't. */
+@Composable
+private fun TermuxApiStatusRow(title: String, detail: String, installed: Boolean, action: @Composable () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+            Text(detail, fontSize = 11.5.sp, lineHeight = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                if (installed) L.common.installed else L.common.notInstalled,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (installed) QuotaGreen else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (!installed) {
+            Spacer(modifier = Modifier.width(10.dp))
+            action()
+        }
     }
 }
 
@@ -1435,7 +1513,7 @@ private fun ThemesSubScreen(
     ) {
         // Theme Selector Header
         Text(
-            text = "Color Theme",
+            text = L.settings.dialog.colorTheme,
             fontSize = 14.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface
@@ -1447,9 +1525,9 @@ private fun ThemesSubScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val themes = listOf(
-                Triple("SYSTEM", "Auto (System)", Icons.Outlined.BrightnessAuto),
-                Triple("LIGHT", "Light", Icons.Outlined.LightMode),
-                Triple("DARK", "Dark", Icons.Outlined.DarkMode)
+                Triple("SYSTEM", L.settings.dialog.autoSystem, Icons.Outlined.BrightnessAuto),
+                Triple("LIGHT", L.settings.dialog.light, Icons.Outlined.LightMode),
+                Triple("DARK", L.settings.dialog.dark, Icons.Outlined.DarkMode)
             )
 
             themes.forEach { (mode, label, icon) ->
@@ -1500,20 +1578,26 @@ private fun ThemesSubScreen(
 @Composable
 private fun AppearanceSubScreen(
     chatFontScale: Float,
-    groupChatsByWorkspace: Boolean,
     floatingSwitcherOrientation: String,
     floatingSwitcherItems: List<String>,
     floatingSwitcherAutoCollapseSec: Int,
     cardBg: Color,
     cardBorder: BorderStroke,
     onSetChatFontScale: (Float) -> Unit,
-    onToggleGroupChatsByWorkspace: (Boolean) -> Unit,
     onSetFloatingSwitcherOrientation: (String) -> Unit,
+    floatingSwitcherHandleIcon: String,
+    onSetFloatingSwitcherHandleIcon: (String) -> Unit,
     onSetFloatingSwitcherItems: (List<String>) -> Unit,
     onSetFloatingSwitcherAutoCollapseSec: (Int) -> Unit,
     onResetFloatingSwitcherPosition: () -> Unit,
     chatHeaderItems: List<String>,
-    onSetChatHeaderItems: (List<String>) -> Unit
+    onSetChatHeaderItems: (List<String>) -> Unit,
+    groupAgentSteps: Boolean,
+    onToggleGroupAgentSteps: (Boolean) -> Unit,
+    groupStepsMin: Int,
+    onSetGroupStepsMin: (Int) -> Unit,
+    showMessageStats: Boolean,
+    onToggleShowMessageStats: (Boolean) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -1530,24 +1614,16 @@ private fun AppearanceSubScreen(
         ) {
             Column {
                 Text(
-                    text = "Chat Text Scaling (${(chatFontScale * 100).toInt()}%)",
+                    text = L.settings.dialog.chatTextScalingValue((chatFontScale * 100).toInt()),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "Scales messages, markdown, and code blocks",
+                    text = L.settings.dialog.scalesMessagesMarkdownAndCodeBlocks,
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
-            }
-            if (chatFontScale != 1.0f) {
-                TextButton(
-                    onClick = { onSetChatFontScale(1.0f) },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Text("Reset (1.0x)", fontSize = 12.sp, color = ClaudeTerracotta)
-                }
             }
         }
 
@@ -1581,7 +1657,7 @@ private fun AppearanceSubScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                val presets = listOf(0.85f to "Small", 1.00f to "Normal", 1.15f to "Medium", 1.30f to "Large", 1.50f to "Huge")
+                val presets = listOf(0.85f to L.settings.dialog.small, 1.00f to L.settings.dialog.normal, 1.15f to L.settings.dialog.medium, 1.30f to L.settings.dialog.large, 1.50f to L.settings.dialog.huge)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1616,7 +1692,7 @@ private fun AppearanceSubScreen(
 
         // Live Chat Message Preview Box (Directly under Chat Text Scaling)
         Text(
-            text = "Live Preview",
+            text = L.settings.dialog.livePreview,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
@@ -1644,7 +1720,7 @@ private fun AppearanceSubScreen(
                         color = ClaudeTerracotta.copy(alpha = 0.15f)
                     ) {
                         Text(
-                            text = "How does AntiGem connect to AGY Hub?",
+                            text = L.settings.dialog.howDoesAntigemConnectToAgy,
                             fontSize = (13 * chatFontScale).sp,
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
@@ -1664,7 +1740,7 @@ private fun AppearanceSubScreen(
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Text(
-                                text = "AntiGem connects via gRPC-Web to stream live agent steps and tool executions.",
+                                text = L.settings.dialog.antigemConnectsViaGrpcWebTo,
                                 fontSize = (13 * chatFontScale).sp,
                                 lineHeight = (18 * chatFontScale).sp,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -1675,7 +1751,85 @@ private fun AppearanceSubScreen(
             }
         }
 
-        // Group Chats By Workspace Switch
+        // Group Agent Steps Switch: runs of a reply's thinking and tool calls fold into one progress pill
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = cardBg,
+            border = cardBorder,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text(
+                            text = L.settings.dialog.groupAgentSteps,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = L.settings.dialog.runsOfThinkingAndToolCalls,
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Switch(
+                        checked = groupAgentSteps,
+                        onCheckedChange = onToggleGroupAgentSteps,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = ClaudeTerracotta
+                        )
+                    )
+                }
+                // Fold after: how many steps in a row fold into a pill (1+ = every run, even a single step)
+                if (groupAgentSteps) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = L.settings.dialog.foldAfterStepsInARow,
+                        fontSize = 11.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        (1..6).forEach { n ->
+                            val isSelected = groupStepsMin == n
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onSetGroupStepsMin(n) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(1.dp, if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f))
+                            ) {
+                                Box(
+                                    modifier = Modifier.padding(vertical = 6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "$n+",
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Message Stats Switch: the token, cache and time stats under each reply
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = cardBg,
@@ -1691,21 +1845,21 @@ private fun AppearanceSubScreen(
             ) {
                 Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                     Text(
-                        text = "Group Chats by Workspace",
+                        text = L.settings.dialog.showMessageStats,
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Categorize chat history in drawer under workspace folders matching repository paths",
+                        text = L.settings.dialog.tokenCountsCachePercentageAndTime,
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
                 }
                 Switch(
-                    checked = groupChatsByWorkspace,
-                    onCheckedChange = onToggleGroupChatsByWorkspace,
+                    checked = showMessageStats,
+                    onCheckedChange = onToggleShowMessageStats,
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = Color.White,
                         checkedTrackColor = ClaudeTerracotta
@@ -1732,14 +1886,14 @@ private fun AppearanceSubScreen(
             Column(modifier = Modifier.padding(16.dp)) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "Floating App Switcher",
+                        text = L.settings.dialog.floatingAppSwitcher,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "The floating pill across the whole app for switching between Chat, IDE, Terminal, Browser and Notes. Choose its layout, items and their order.",
+                        text = L.settings.dialog.theFloatingPillAcrossTheWhole,
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
@@ -1749,102 +1903,122 @@ private fun AppearanceSubScreen(
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Layout Orientation Selector
-                Text(
-                    text = "Layout Orientation",
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val isVert = floatingSwitcherOrientation.equals("VERTICAL", ignoreCase = true)
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onSetFloatingSwitcherOrientation("VERTICAL") },
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isVert) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, if (isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(vertical = 8.dp, horizontal = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(Icons.Outlined.ExpandLess, contentDescription = null, tint = if (isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Vertical", fontSize = 12.sp, fontWeight = if (isVert) FontWeight.Bold else FontWeight.Normal, color = if (isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface)
-                        }
-                    }
-
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onSetFloatingSwitcherOrientation("HORIZONTAL") },
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (!isVert) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, if (!isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(vertical = 8.dp, horizontal = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = if (!isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Horizontal", fontSize = 12.sp, fontWeight = if (!isVert) FontWeight.Bold else FontWeight.Normal, color = if (!isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface)
-                        }
-                    }
-                }
+                // The page overview (on/off, which pill opens it, its layout) and the pills' size
+                SwitcherOverviewOptions(handleIcon = floatingSwitcherHandleIcon)
+                // The icon panel's own options only while the switcher pill has one (not when its tap opens the overview)
+                val iconPanelInUse = rememberPageOverviewMode() != "SWITCHER"
 
                 Spacer(modifier = Modifier.height(14.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                // Auto-Collapse Timeout Selector
+                if (iconPanelInUse) {
+                    // Layout Orientation Selector
+                    Text(
+                        text = L.settings.dialog.layoutOrientation,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val isVert = floatingSwitcherOrientation.equals("VERTICAL", ignoreCase = true)
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onSetFloatingSwitcherOrientation("VERTICAL") },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isVert) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, if (isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(Icons.Outlined.ExpandLess, contentDescription = null, tint = if (isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(L.settings.dialog.vertical, fontSize = 12.sp, fontWeight = if (isVert) FontWeight.Bold else FontWeight.Normal, color = if (isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface)
+                            }
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onSetFloatingSwitcherOrientation("HORIZONTAL") },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (!isVert) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, if (!isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = if (!isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(L.settings.dialog.horizontal, fontSize = 12.sp, fontWeight = if (!isVert) FontWeight.Bold else FontWeight.Normal, color = if (!isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                }
+
+                // Collapsed Pill Icon Selector
                 Text(
-                    text = "Auto-Collapse Timeout",
+                    text = L.settings.dialog.collapsedIcon,
                     fontSize = 12.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Automatically collapses into a small arrow handle after inactivity",
+                    text = L.settings.dialog.theIconOnTheSmallHandle,
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                val timeouts = listOf(0 to "Never", 3 to "3s", 5 to "5s", 10 to "10s", 15 to "15s")
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    timeouts.forEach { (sec, label) ->
-                        val isSelected = floatingSwitcherAutoCollapseSec == sec
-                        Surface(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { onSetFloatingSwitcherAutoCollapseSec(sec) },
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(1.dp, if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f))
-                        ) {
-                            Box(
-                                modifier = Modifier.padding(vertical = 6.dp),
-                                contentAlignment = Alignment.Center
+                val handleIcons = com.example.gemini.ui.components.FloatingSwitcherHandleIcons
+                // an unknown saved id shows the default icon, so mark that one
+                val selectedHandleIcon = handleIcons.firstOrNull { it.first == floatingSwitcherHandleIcon }?.first
+                    ?: handleIcons.first().first
+                handleIcons.chunked(4).forEach { rowIcons ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        rowIcons.forEach { (iconId, icon) ->
+                            val isSelected = iconId == selectedHandleIcon
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable { onSetFloatingSwitcherHandleIcon(iconId) },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(1.dp, if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
                             ) {
-                                Text(
-                                    text = label,
-                                    fontSize = 11.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 10.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = icon,
+                                        contentDescription = iconId.replaceFirstChar { it.uppercase() },
+                                        tint = if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1852,9 +2026,58 @@ private fun AppearanceSubScreen(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
+                if (iconPanelInUse) {
+                    // Auto-Collapse Timeout Selector
+                    Text(
+                        text = L.settings.dialog.autoCollapseTimeout,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = L.settings.dialog.automaticallyCollapsesIntoASmallHandle,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    val timeouts = listOf(0 to L.common.never, 3 to "3s", 5 to "5s", 10 to "10s", 15 to "15s")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        timeouts.forEach { (sec, label) ->
+                            val isSelected = floatingSwitcherAutoCollapseSec == sec
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onSetFloatingSwitcherAutoCollapseSec(sec) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(1.dp, if (isSelected) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f))
+                            ) {
+                                Box(
+                                    modifier = Modifier.padding(vertical = 6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = label,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                }
+
                 // Customize Items Order & Visibility
                 Text(
-                    text = "Customize Icons & Order",
+                    text = L.settings.dialog.customizeIconsOrder,
                     fontSize = 12.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -1868,13 +2091,13 @@ private fun AppearanceSubScreen(
                 displayedList.forEach { itemId ->
                     val isEnabled = currentItems.contains(itemId)
                     val itemLabel = when (itemId) {
-                        "chat" -> "Chat"
-                        "ide" -> "IDE (Code Editor)"
-                        "terminal" -> "Terminal"
-                        "browser" -> "Web Browser"
-                        "notes" -> "Notes & To-dos"
-                        "files" -> "Files (file explorer)"
-                        "run" -> "Run (build & run commands)"
+                        "chat" -> L.common.chat
+                        "ide" -> L.settings.dialog.ideCodeEditor
+                        "terminal" -> L.common.terminal
+                        "browser" -> L.settings.dialog.webBrowser
+                        "notes" -> L.common.notesToDos
+                        "files" -> L.settings.dialog.filesFileExplorer
+                        "run" -> L.settings.dialog.runBuildRunCommands
                         else -> itemId
                     }
                     val itemIcon = when (itemId) {
@@ -1943,7 +2166,7 @@ private fun AppearanceSubScreen(
                                         enabled = itemOrderIndex > 0,
                                         modifier = Modifier.size(26.dp)
                                     ) {
-                                        Icon(Icons.Outlined.ExpandLess, contentDescription = "Move Up", modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Outlined.ExpandLess, contentDescription = L.settings.dialog.moveUp, modifier = Modifier.size(16.dp))
                                     }
                                     IconButton(
                                         onClick = {
@@ -1958,7 +2181,7 @@ private fun AppearanceSubScreen(
                                         enabled = itemOrderIndex < currentItems.size - 1,
                                         modifier = Modifier.size(26.dp)
                                     ) {
-                                        Icon(Icons.Outlined.ExpandMore, contentDescription = "Move Down", modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Outlined.ExpandMore, contentDescription = L.settings.dialog.moveDown, modifier = Modifier.size(16.dp))
                                     }
                                 }
                             }
@@ -1977,8 +2200,59 @@ private fun AppearanceSubScreen(
                 ) {
                     Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Reset Screen Position to Right-Center", fontSize = 12.sp)
+                    Text(L.settings.dialog.resetScreenPositionToRightCenter, fontSize = 12.sp)
                 }
+            }
+        }
+
+        // Gemmy: the floating cartoon buddy (on by default; first offered by the one-time "Meet Gemmy" dialog)
+        val gemmyContext = LocalContext.current
+        val gemmyPrefs = remember(gemmyContext) { com.example.gemini.data.preferences.AuthPreferences(gemmyContext) }
+        val isGemmyEnabled by gemmyPrefs.isGemmyEnabled.collectAsState(initial = true)
+        val gemmyScope = rememberCoroutineScope()
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = cardBg,
+            border = cardBorder,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                com.example.gemini.ui.components.GemmyPreview(
+                    zoom = 0.85f,
+                    modifier = Modifier.alpha(if (isGemmyEnabled) 1f else 0.4f)
+                )
+                Column(modifier = Modifier.weight(1f).padding(start = 4.dp, end = 12.dp)) {
+                    Text(
+                        text = L.settings.dialog.gemmy,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = L.settings.dialog.aFloatingCartoonBuddyAcrossThe,
+                        fontSize = 11.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+                Switch(
+                    checked = isGemmyEnabled,
+                    onCheckedChange = { enable ->
+                        gemmyScope.launch {
+                            gemmyPrefs.setGemmyEnabled(enable)
+                            gemmyPrefs.setHasSeenGemmyIntro(true) // decided here: no need for the intro dialog anymore
+                        }
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = ClaudeTerracotta
+                    )
+                )
             }
         }
 
@@ -2011,14 +2285,14 @@ private fun AppearanceSubScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                         Text(
-                            text = "Separate Terminal App Icon",
+                            text = L.settings.dialog.separateTerminalAppIcon,
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Show a dedicated terminal icon on your Android home screen and app drawer",
+                            text = L.settings.dialog.showADedicatedTerminalIconOn,
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
@@ -2059,7 +2333,7 @@ private fun AppearanceSubScreen(
                         )
 
                         Text(
-                            text = "Launcher Icon & Name Style",
+                            text = L.settings.dialog.launcherIconNameStyle,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
@@ -2117,7 +2391,7 @@ private fun AppearanceSubScreen(
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        text = "Modern AntiGem styled icon & name",
+                                        text = L.settings.dialog.modernAntigemStyledIconName,
                                         fontSize = 10.5.sp,
                                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                                     )
@@ -2182,7 +2456,7 @@ private fun AppearanceSubScreen(
                                 ) {
                                     androidx.compose.foundation.Image(
                                         painter = androidx.compose.ui.res.painterResource(id = com.example.gemini.R.drawable.ic_termux_foreground),
-                                        contentDescription = "Termux",
+                                        contentDescription = L.common.termux,
                                         modifier = Modifier.size(24.dp)
                                     )
                                 }
@@ -2191,13 +2465,13 @@ private fun AppearanceSubScreen(
 
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "Termux",
+                                        text = L.common.termux,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        text = "Classic >_ prompt icon & name",
+                                        text = L.settings.dialog.classicPromptIconName,
                                         fontSize = 10.5.sp,
                                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                                     )
@@ -2251,7 +2525,7 @@ internal fun McpPresetTile(
     added: Boolean,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    addedLabel: String = "Added · tap to edit",
+    addedLabel: String = L.settings.dialog.addedTapToEdit,
     onClick: () -> Unit
 ) {
     Surface(
@@ -2281,7 +2555,7 @@ internal fun McpPresetTile(
                     )
                     if (added) {
                         Spacer(Modifier.width(4.dp))
-                        Icon(Icons.Filled.CheckCircle, contentDescription = "Added", tint = QuotaGreen, modifier = Modifier.size(13.dp))
+                        Icon(Icons.Filled.CheckCircle, contentDescription = L.common.added, tint = QuotaGreen, modifier = Modifier.size(13.dp))
                     }
                 }
                 Text(
@@ -2313,14 +2587,14 @@ private fun ChatHeaderIconsCard(
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                text = "Chat Header Icons",
+                text = L.settings.dialog.chatHeaderIcons,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "Shortcut buttons in the chat's top bar, next to the project name. Turn any on or off (all off is fine) and set their order, left to right.",
+                text = L.settings.dialog.shortcutButtonsInTheChatsTop,
                 fontSize = 11.5.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
@@ -2336,13 +2610,13 @@ private fun ChatHeaderIconsCard(
             displayedList.forEach { itemId ->
                 val isEnabled = currentItems.contains(itemId)
                 val itemLabel = when (itemId) {
-                    "newchat" -> "New Chat"
-                    "ide" -> "IDE (Code Editor)"
-                    "terminal" -> "Terminal"
-                    "browser" -> "Web Browser"
-                    "notes" -> "Notes & To-dos"
-                    "files" -> "Files (file explorer)"
-                    "run" -> "Run (build & run commands)"
+                    "newchat" -> L.settings.dialog.newChat
+                    "ide" -> L.settings.dialog.ideCodeEditor
+                    "terminal" -> L.common.terminal
+                    "browser" -> L.settings.dialog.webBrowser
+                    "notes" -> L.common.notesToDos
+                    "files" -> L.settings.dialog.filesFileExplorer
+                    "run" -> L.settings.dialog.runBuildRunCommands
                     else -> itemId
                 }
                 val itemIcon = when (itemId) {
@@ -2404,7 +2678,7 @@ private fun ChatHeaderIconsCard(
                                     enabled = index > 0,
                                     modifier = Modifier.size(26.dp)
                                 ) {
-                                    Icon(Icons.Outlined.ExpandLess, contentDescription = "Move Up", modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Outlined.ExpandLess, contentDescription = L.settings.dialog.moveUp, modifier = Modifier.size(16.dp))
                                 }
                                 IconButton(
                                     onClick = {
@@ -2417,7 +2691,7 @@ private fun ChatHeaderIconsCard(
                                     enabled = index < currentItems.size - 1,
                                     modifier = Modifier.size(26.dp)
                                 ) {
-                                    Icon(Icons.Outlined.ExpandMore, contentDescription = "Move Down", modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Outlined.ExpandMore, contentDescription = L.settings.dialog.moveDown, modifier = Modifier.size(16.dp))
                                 }
                             }
                         }
@@ -2517,7 +2791,7 @@ private fun McpSubScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
-                                contentDescription = "Dismiss",
+                                contentDescription = L.common.dismiss,
                                 tint = MaterialTheme.colorScheme.error.copy(alpha = 0.6f),
                                 modifier = Modifier.size(16.dp)
                             )
@@ -2559,13 +2833,13 @@ private fun McpSubScreen(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Model Context Protocol (MCP)",
+                            text = L.settings.dialog.modelContextProtocolMcp,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Global config: ~/.gemini/config/mcp_config.json",
+                            text = L.settings.dialog.globalConfigGeminiConfigMcpConfig,
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
@@ -2576,7 +2850,7 @@ private fun McpSubScreen(
                 }
 
                 Text(
-                    text = "Configure local process (Stdio) or remote (SSE) MCP servers. Discovered tools are dynamically available to all models during chat turns.",
+                    text = L.settings.dialog.configureLocalProcessStdioOrRemote,
                     fontSize = 12.5.sp,
                     lineHeight = 17.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
@@ -2609,7 +2883,7 @@ private fun McpSubScreen(
                             )
                         }
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(if (isRefreshingAll) "Testing All..." else "Test & Refresh", fontSize = 13.sp)
+                        Text(if (isRefreshingAll) L.settings.dialog.testingAll else L.settings.dialog.testRefresh, fontSize = 13.sp)
                     }
 
                     Button(
@@ -2628,7 +2902,7 @@ private fun McpSubScreen(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Add Server", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(L.settings.dialog.addServer, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 
@@ -2648,14 +2922,14 @@ private fun McpSubScreen(
                         tint = ClaudeTerracotta
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Browse MCP Catalog / Marketplace (1-Click)", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = ClaudeTerracotta)
+                    Text(L.settings.dialog.browseMcpCatalogMarketplace1Click, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = ClaudeTerracotta)
                 }
             }
         }
 
         // Quick presets: a two-column grid of tiles, all visible without scrolling sideways
         Text(
-            text = "Quick Presets & Templates",
+            text = L.settings.dialog.quickPresetsTemplates,
             fontSize = 12.5.sp,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
@@ -2689,26 +2963,25 @@ private fun McpSubScreen(
             }
             val presets = listOf(
                 // No spec: opens the picker for an installed plugin's own MCP
-                McpPreset("Custom Plugin MCP", "Pick an installed plugin", Icons.Outlined.Extension, ClaudeTerracotta, null),
-                McpPreset("Plugin Developer", "Build & test AntiGem plugins", Icons.Outlined.DeveloperMode, GeminiPurple,
+                McpPreset(L.common.customPluginMcp, L.common.pickAnInstalledPlugin, Icons.Outlined.Extension, ClaudeTerracotta, null),
+                McpPreset(L.common.pluginDeveloper, L.settings.dialog.buildTestAntigemPlugins, Icons.Outlined.DeveloperMode, GeminiPurple,
                     localSpec(bridge.DEVELOPER_MCP_NAME, "/extension_developer")),
-                McpPreset("Mini App Developer", "Build, test & sign mini apps", androidx.compose.material.icons.Icons.Outlined.Apps, GeminiBlue,
+                McpPreset(L.common.miniAppDeveloper, L.settings.dialog.buildTestSignMiniApps, androidx.compose.material.icons.Icons.Outlined.Apps, GeminiBlue,
                     localSpec(bridge.MINI_APP_DEVELOPER_MCP_NAME, "/mini_app_developer")),
-                McpPreset("Browser", "Control the in-app browser", Icons.Outlined.Language, GeminiBlue, localSpec("browser_mcp", "/browser")),
-                McpPreset("Terminal", "Run commands in the terminal", Icons.Outlined.Terminal, QuotaGreen, localSpec("terminal_mcp", "/terminal")),
-                McpPreset("Android", "Tap, type & read this phone", Icons.Outlined.PhoneAndroid, com.example.gemini.theme.AppColors.accentTeal,
+                McpPreset(L.common.browser, L.common.controlTheInAppBrowser, Icons.Outlined.Language, GeminiBlue, localSpec("browser_mcp", "/browser")),
+                McpPreset(L.common.terminal, L.settings.dialog.runCommandsInTheTerminal, Icons.Outlined.Terminal, QuotaGreen, localSpec("terminal_mcp", "/terminal")),
+                McpPreset(L.settings.dialog.android, L.settings.dialog.tapTypeReadThisPhone, Icons.Outlined.PhoneAndroid, com.example.gemini.theme.AppColors.accentTeal,
                     localSpec(bridge.ANDROID_AUTOMATION_MCP_NAME, "/android")),
-                McpPreset("Notes & To-dos", "Read & edit your notes", Icons.Outlined.EditNote, com.example.gemini.theme.AppColors.warning, localSpec(bridge.NOTES_MCP_NAME, "/notes")),
-                McpPreset("Jarvis", "Voice control of this app", Icons.Outlined.RecordVoiceOver, com.example.gemini.theme.AppColors.accentTeal, localSpec(bridge.JARVIS_MCP_NAME, "/jarvis")),
-                McpPreset("Theme", "Create & switch app themes", Icons.Outlined.Palette, com.example.gemini.theme.AppColors.accentAlt, localSpec(bridge.THEME_MCP_NAME, "/theme")),
-                McpPreset("Stitch", "Google Stitch UI design · API key", Icons.Outlined.Palette, com.example.gemini.theme.AppColors.accentPink,
+                McpPreset(L.common.notesToDos, L.settings.dialog.readEditYourNotes, Icons.Outlined.EditNote, com.example.gemini.theme.AppColors.warning, localSpec(bridge.NOTES_MCP_NAME, "/notes")),
+                McpPreset(L.common.jarvis, L.settings.dialog.voiceControlOfThisApp, Icons.Outlined.RecordVoiceOver, com.example.gemini.theme.AppColors.accentTeal, localSpec(bridge.JARVIS_MCP_NAME, "/jarvis")),
+                McpPreset(L.common.theme, L.settings.dialog.createSwitchAppThemes, Icons.Outlined.Palette, com.example.gemini.theme.AppColors.accentAlt, localSpec(bridge.THEME_MCP_NAME, "/theme")),
+                McpPreset(L.common.language, L.settings.dialog.translateTheAppAddLanguages, Icons.Outlined.Translate, com.example.gemini.theme.AppColors.accentTeal, localSpec(bridge.LANGUAGE_MCP_NAME, "/language")),
+                McpPreset(L.common.stitch, L.settings.dialog.googleStitchUiDesignApiKey, Icons.Outlined.Palette, com.example.gemini.theme.AppColors.accentPink,
                     com.example.gemini.domain.model.McpServerSpec(serverName = "stitch", serverUrl = "https://stitch.googleapis.com/mcp", headers = mapOf("X-Goog-Api-Key" to ""))),
-                // REA runs in the terminal's proot-distro Ubuntu, so only on com.termux builds; the tile picks its tool groups
-                if (com.example.gemini.data.local.LocalEnvironmentManager.isTermuxPackage(context))
-                    McpPreset("REA", "Reverse engineering · APK & native", Icons.Outlined.BugReport, com.example.gemini.theme.AppColors.accentPink, null,
-                        onClick = { showReaDialog = true },
-                        added = mcpServers.any { it.spec?.serverUrl.isNullOrBlank() && com.example.gemini.data.rea.ReaManager.isReaCommand(it.spec?.command) })
-                else null
+                // REA runs in the terminal's proot-distro Ubuntu; the tile picks its tool groups
+                McpPreset("REA", L.settings.dialog.reverseEngineeringApkNative, Icons.Outlined.BugReport, com.example.gemini.theme.AppColors.accentPink, null,
+                    onClick = { showReaDialog = true },
+                    added = mcpServers.any { it.spec?.serverUrl.isNullOrBlank() && com.example.gemini.data.rea.ReaManager.isReaCommand(it.spec?.command) })
             ).filterNotNull()
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 presets.chunked(2).forEach { row ->
@@ -2742,12 +3015,13 @@ private fun McpSubScreen(
                 text = "Configured Servers (${mcpServers.size})",
                 fontSize = 13.5.sp,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp)
             )
             if (mcpServers.isNotEmpty()) {
                 val totalTools = mcpServers.sumOf { it.tools.size }
                 Text(
-                    text = "$totalTools tools available",
+                    text = L.settings.dialog.totaltoolsToolsAvailable(totalTools),
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
@@ -2776,7 +3050,7 @@ private fun McpSubScreen(
                             color = ClaudeTerracotta
                         )
                         Text(
-                            text = "Loading MCP Servers...",
+                            text = L.settings.dialog.loadingMcpServers,
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurface
@@ -2804,7 +3078,7 @@ private fun McpSubScreen(
                             modifier = Modifier.size(42.dp)
                         )
                         Text(
-                            text = "Unable to Load MCP Servers",
+                            text = L.settings.dialog.unableToLoadMcpServers,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.error
@@ -2817,7 +3091,7 @@ private fun McpSubScreen(
                             textAlign = TextAlign.Center
                         )
                         Text(
-                            text = "Could not retrieve MCP server states. Ensure the Antigravity daemon is running on this device or accessible at the configured Hub URL.",
+                            text = L.settings.dialog.couldNotRetrieveMcpServerStates,
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                             textAlign = TextAlign.Center
@@ -2835,7 +3109,7 @@ private fun McpSubScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Retry Connection", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
+                            Text(L.settings.dialog.retryConnection, fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -2860,13 +3134,13 @@ private fun McpSubScreen(
                             modifier = Modifier.size(44.dp)
                         )
                         Text(
-                            text = "No MCP Servers Configured",
+                            text = L.settings.dialog.noMcpServersConfigured,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Add an MCP server to connect SQLite, filesystem, browser automation, or custom local tools to the assistant.",
+                            text = L.settings.dialog.addAnMcpServerToConnect,
                             fontSize = 12.sp,
                             lineHeight = 16.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
@@ -2889,10 +3163,11 @@ private fun McpSubScreen(
                 server.status.contains("ERROR", ignoreCase = true) || !server.error.isNullOrBlank() -> Color.Red
                 else -> com.example.gemini.theme.AppColors.warning
             }
+            // off: no status badge, the switch shows it
             val statusLabel = when {
-                !server.isEnabled -> "Disabled"
-                server.status.contains("RUNNING", ignoreCase = true) || server.status.contains("OK", ignoreCase = true) || server.tools.isNotEmpty() -> "Ready"
-                server.status.contains("ERROR", ignoreCase = true) || !server.error.isNullOrBlank() -> "Error"
+                !server.isEnabled -> null
+                server.status.contains("RUNNING", ignoreCase = true) || server.status.contains("OK", ignoreCase = true) || server.tools.isNotEmpty() -> L.common.ready
+                server.status.contains("ERROR", ignoreCase = true) || !server.error.isNullOrBlank() -> L.settings.dialog.error
                 else -> server.status.removePrefix("MCP_SERVER_STATUS_").lowercase().replaceFirstChar { it.uppercase() }
             }
 
@@ -2947,7 +3222,7 @@ private fun McpSubScreen(
                                     color = if (isSse) com.example.gemini.theme.AppColors.info.copy(alpha = 0.15f) else com.example.gemini.theme.AppColors.accentAlt.copy(alpha = 0.15f)
                                 ) {
                                     Text(
-                                        text = if (isSse) "SSE" else "Stdio",
+                                        text = if (isSse) L.settings.dialog.sse else L.settings.dialog.stdio,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = if (isSse) com.example.gemini.theme.AppColors.info else com.example.gemini.theme.AppColors.accentAlt,
@@ -2956,7 +3231,7 @@ private fun McpSubScreen(
                                 }
 
                                 // Status badge
-                                Surface(
+                                if (statusLabel != null) Surface(
                                     shape = RoundedCornerShape(4.dp),
                                     color = statusColor.copy(alpha = 0.15f)
                                 ) {
@@ -3022,7 +3297,7 @@ private fun McpSubScreen(
                                     tint = com.example.gemini.theme.AppColors.info
                                 )
                                 Text(
-                                    text = "Headers: ${server.spec!!.headers.keys.joinToString(", ")}",
+                                    text = L.settings.dialog.headersValue(server.spec!!.headers.keys.joinToString(", ")),
                                     fontSize = 11.sp,
                                     fontFamily = FontFamily.Monospace,
                                     color = com.example.gemini.theme.AppColors.info
@@ -3047,7 +3322,7 @@ private fun McpSubScreen(
                                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                                 )
                                 Text(
-                                    text = "cwd: ${server.spec!!.cwd}",
+                                    text = L.settings.dialog.cwdCwd(server.spec!!.cwd),
                                     fontSize = 11.sp,
                                     fontFamily = FontFamily.Monospace,
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
@@ -3077,7 +3352,7 @@ private fun McpSubScreen(
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                         Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = Color.Red, modifier = Modifier.size(14.dp))
-                                        Text("Connection Issue", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Red)
+                                        Text(L.settings.dialog.connectionIssue, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Red)
                                     }
                                     Icon(
                                         imageVector = if (isErrorExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
@@ -3121,7 +3396,7 @@ private fun McpSubScreen(
                                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Icon(imageVector = Icons.Default.Build, contentDescription = null, tint = ClaudeTerracotta, modifier = Modifier.size(14.dp))
                                         Text(
-                                            text = "${server.tools.size} Discovered Tool${if (server.tools.size > 1) "s" else ""}",
+                                            text = L.settings.dialog.toolscountDiscoveredToolValue(server.tools.size, if (server.tools.size > 1) "s" else ""),
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = MaterialTheme.colorScheme.onSurface
@@ -3184,7 +3459,7 @@ private fun McpSubScreen(
                                 Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
                             }
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text(if (isThisRefreshing) "Testing..." else "Refresh", fontSize = 12.sp)
+                            Text(if (isThisRefreshing) L.settings.dialog.testing else L.common.refresh, fontSize = 12.sp)
                         }
 
                         Spacer(modifier = Modifier.width(4.dp))
@@ -3198,7 +3473,7 @@ private fun McpSubScreen(
                         ) {
                             Icon(imageVector = Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Edit", fontSize = 12.sp)
+                            Text(L.common.edit, fontSize = 12.sp)
                         }
 
                         Spacer(modifier = Modifier.width(4.dp))
@@ -3210,7 +3485,7 @@ private fun McpSubScreen(
                         ) {
                             Icon(imageVector = Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Remove", fontSize = 12.sp)
+                            Text(L.common.remove, fontSize = 12.sp)
                         }
                     }
                 }
@@ -3260,7 +3535,7 @@ private fun McpSubScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = "Dismiss",
+                        contentDescription = L.common.dismiss,
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                         modifier = Modifier.size(14.dp)
                     )
@@ -3275,9 +3550,9 @@ private fun McpSubScreen(
         val targetName = serverToDelete ?: ""
         AlertDialog(
             onDismissRequest = { serverToDelete = null },
-            title = { Text("Remove MCP Server?") },
+            title = { Text(L.settings.dialog.removeMcpServer) },
             text = {
-                Text("Are you sure you want to remove \"$targetName\" from global mcp_config.json? The server and its tools will be disconnected.")
+                Text(L.settings.dialog.areYouSureYouWantTo(targetName))
             },
             confirmButton = {
                 Button(
@@ -3287,12 +3562,12 @@ private fun McpSubScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
                 ) {
-                    Text("Remove", fontWeight = FontWeight.Bold)
+                    Text(L.common.remove, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { serverToDelete = null }) {
-                    Text("Cancel")
+                    Text(L.common.cancel)
                 }
             }
         )
@@ -3535,7 +3810,7 @@ private fun AddEditMcpServerDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = if (initialSpec != null && initialSpec.serverName.isNotBlank()) "Edit MCP Server" else "Add MCP Server",
+                text = if (initialSpec != null && initialSpec.serverName.isNotBlank()) L.settings.dialog.editMcpServer else L.settings.dialog.addMcpServer,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -3553,9 +3828,9 @@ private fun AddEditMcpServerDialog(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     listOf(
-                        McpEditMode.STDIO to "Stdio",
+                        McpEditMode.STDIO to L.settings.dialog.stdio,
                         McpEditMode.SSE to "SSE",
-                        McpEditMode.RAW to "Raw"
+                        McpEditMode.RAW to L.settings.dialog.raw
                     ).forEach { (m, label) ->
                         val isSelected = mode == m
                         Surface(
@@ -3596,8 +3871,8 @@ private fun AddEditMcpServerDialog(
                         name = it
                         validationError = null
                     },
-                    label = { Text("Server Name *") },
-                    placeholder = { Text("e.g. stitch, filesystem, github") },
+                    label = { Text(L.settings.dialog.serverName) },
+                    placeholder = { Text(L.settings.dialog.eGStitchFilesystemGithub) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -3610,7 +3885,7 @@ private fun AddEditMcpServerDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Server Configuration JSON",
+                                text = L.settings.dialog.serverConfigurationJson,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
@@ -3622,12 +3897,12 @@ private fun AddEditMcpServerDialog(
                                         rawJsonText = parsed.toString(2)
                                         validationError = null
                                     } catch (e: Exception) {
-                                        validationError = "Invalid JSON: ${e.message}"
+                                        validationError = L.settings.dialog.invalidJsonMessage(e.message)
                                     }
                                 },
                                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                             ) {
-                                Text("Format", fontSize = 11.sp, color = ClaudeTerracotta)
+                                Text(L.settings.dialog.format, fontSize = 11.sp, color = ClaudeTerracotta)
                             }
                         }
 
@@ -3659,7 +3934,7 @@ private fun AddEditMcpServerDialog(
                             validationError = null
                         },
                         label = { Text("Command *") },
-                        placeholder = { Text("e.g. npx, python3, node, uvx") },
+                        placeholder = { Text(L.settings.dialog.eGNpxPython3NodeUvx) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -3668,8 +3943,8 @@ private fun AddEditMcpServerDialog(
                     OutlinedTextField(
                         value = argsText,
                         onValueChange = { argsText = it },
-                        label = { Text("Arguments (space separated)") },
-                        placeholder = { Text("e.g. -y @modelcontextprotocol/server-filesystem .") },
+                        label = { Text(L.settings.dialog.argumentsSpaceSeparated) },
+                        placeholder = { Text(L.settings.dialog.eGYModelcontextprotocolServerFilesystem) },
                         minLines = 2,
                         maxLines = 4,
                         modifier = Modifier.fillMaxWidth()
@@ -3679,8 +3954,8 @@ private fun AddEditMcpServerDialog(
                     OutlinedTextField(
                         value = cwdText,
                         onValueChange = { cwdText = it },
-                        label = { Text("Working Directory (optional)") },
-                        placeholder = { Text("e.g. ~/projects/my-app") },
+                        label = { Text(L.settings.dialog.workingDirectoryOptional) },
+                        placeholder = { Text(L.settings.dialog.eGProjectsMyApp) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -3713,13 +3988,13 @@ private fun AddEditMcpServerDialog(
                     OutlinedTextField(
                         value = headersText,
                         onValueChange = { headersText = it },
-                        label = { Text("HTTP Headers (Header: Value per line)") },
+                        label = { Text(L.settings.dialog.httpHeadersHeaderValuePerLine) },
                         placeholder = { Text("X-Goog-Api-Key: AQ.Ab8RN6...\nAuthorization: Bearer token") },
                         minLines = 3,
                         maxLines = 6,
                         supportingText = {
                             Text(
-                                text = "Set custom headers like API keys or tokens required by the remote endpoint.",
+                                text = L.settings.dialog.setCustomHeadersLikeApiKeys,
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             )
@@ -3743,7 +4018,7 @@ private fun AddEditMcpServerDialog(
                 onClick = {
                     val cleanName = name.trim()
                     if (cleanName.isBlank()) {
-                        validationError = "Server name is required"
+                        validationError = L.settings.dialog.serverNameIsRequired
                         return@Button
                     }
 
@@ -3753,7 +4028,7 @@ private fun AddEditMcpServerDialog(
                             val sUrl = sObj.optString("serverUrl", "").trim()
                             val sCmd = sObj.optString("command", "").trim()
                             if (sUrl.isBlank() && sCmd.isBlank()) {
-                                validationError = "JSON must specify either 'command' or 'serverUrl'"
+                                validationError = L.settings.dialog.jsonMustSpecifyEitherCommandOr
                                 return@Button
                             }
                             val isDis = sObj.optBoolean("disabled", initialSpec?.disabled ?: false)
@@ -3765,13 +4040,13 @@ private fun AddEditMcpServerDialog(
                             )
                             onSave(spec, rawJsonText.trim())
                         } catch (e: Exception) {
-                            validationError = "Invalid JSON: ${e.message}"
+                            validationError = L.settings.dialog.invalidJsonMessage(e.message)
                             return@Button
                         }
                     } else if (mode == McpEditMode.STDIO) {
                         val cleanCmd = command.trim()
                         if (cleanCmd.isBlank()) {
-                            validationError = "Command is required"
+                            validationError = L.settings.dialog.commandIsRequired
                             return@Button
                         }
                         // Parse arguments, supporting quoted strings
@@ -3802,7 +4077,7 @@ private fun AddEditMcpServerDialog(
                     } else {
                         val cleanUrl = serverUrl.trim()
                         if (cleanUrl.isBlank()) {
-                            validationError = "Server URL is required"
+                            validationError = L.settings.dialog.serverUrlIsRequired
                             return@Button
                         }
 
@@ -3833,12 +4108,12 @@ private fun AddEditMcpServerDialog(
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
             ) {
-                Text("Save", fontWeight = FontWeight.Bold)
+                Text(L.common.save, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(L.common.cancel)
             }
         }
     )
@@ -3868,17 +4143,13 @@ private fun TerminalSubScreen(
     onInstallLocalTools: () -> Unit,
     onResetLocalTools: () -> Unit,
     onSaveTerminalPreferences: (Int, String, Int, String) -> Unit,
-    onOpenLocalTerminal: () -> Unit
+    onOpenLocalTerminal: () -> Unit,
+    /** Where agents run (the phone's runtime: install, switch, delete). */
+    onOpenRuntime: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val remoteMode = com.example.gemini.data.preferences.AuthPreferences.currentRemoteMode
     val coroutineScope = rememberCoroutineScope()
-    var showResetWarningDialog by remember { mutableStateOf(false) }
-    var showResetPasswordDialog by remember { mutableStateOf(false) }
-    var resetPasswordInput by remember { mutableStateOf("") }
-    var showShutdownCountdownDialog by remember { mutableStateOf(false) }
-    var countdownSeconds by remember { mutableIntStateOf(5) }
-
     var hostState by remember { mutableStateOf(sshHost) }
     var portState by remember { mutableStateOf(sshPort.toString()) }
     var userState by remember { mutableStateOf(sshUser) }
@@ -3891,6 +4162,13 @@ private fun TerminalSubScreen(
     var cursorStyleState by remember { mutableStateOf(terminalCursorStyle) }
     var bufferSizeState by remember { mutableIntStateOf(terminalBufferSize) }
     var themeState by remember { mutableStateOf(terminalTheme) }
+    val terminalPrefs = remember(context) { com.example.gemini.data.preferences.AuthPreferences(context) }
+    val sessionPillEnabled by terminalPrefs.terminalSessionPillEnabled
+        .collectAsState(initial = terminalPrefs.getTerminalSessionPillEnabledSync())
+    val drawerSwipeArea by terminalPrefs.terminalDrawerSwipeArea
+        .collectAsState(initial = terminalPrefs.getTerminalDrawerSwipeAreaSync())
+    val charBasedInput by terminalPrefs.terminalCharBasedInput
+        .collectAsState(initial = terminalPrefs.getTerminalCharBasedInputSync())
 
 
     Column(
@@ -3920,24 +4198,9 @@ private fun TerminalSubScreen(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(text = if (remoteMode) "Terminal on the remote server" else "Use Terminal via SSH", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = if (useSshTerminal) QuotaGreen.copy(alpha = 0.15f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-                            ) {
-                                Text(
-                                    text = if (useSshTerminal || remoteMode) "SSH Mode" else "Local Mode",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (useSshTerminal) QuotaGreen else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
-                                )
-                            }
-                        }
+                        Text(text = if (remoteMode) L.settings.dialog.terminalOnTheRemoteServer else L.settings.dialog.useTerminalViaSsh, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
                         Text(
-                            text = if (remoteMode) "Runs on your remote server over SSH" else if (useSshTerminal) "Direct SSH to Termux sshd without local rootfs" else "Built-in chroot rootfs environment",
+                            text = if (remoteMode) L.settings.dialog.runsOnYourRemoteServerOver else if (useSshTerminal) L.settings.dialog.directSshToTermuxSshdWithout else L.settings.dialog.builtInChrootRootfsEnvironment,
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
@@ -3955,8 +4218,7 @@ private fun TerminalSubScreen(
                 if (remoteMode) {
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "Remote server mode is on: the terminal and shell runs use the SSH login from Settings > Servers" +
-                            (if (sshHost.isNotBlank()) " ($sshUser@$sshHost:$sshPort)" else "") + ". Nothing to set here.",
+                        text = L.settings.dialog.remoteServerModeIsOnThe((if (sshHost.isNotBlank()) " ($sshUser@$sshHost:$sshPort)" else "")),
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
@@ -3975,7 +4237,7 @@ private fun TerminalSubScreen(
                                 sshTestStatus = null
                                 sshSaveFeedback = null
                             },
-                            label = { Text("SSH Host") },
+                            label = { Text(L.settings.dialog.sshHost) },
                             modifier = Modifier.weight(2f),
                             singleLine = true,
                             shape = RoundedCornerShape(8.dp)
@@ -3987,7 +4249,7 @@ private fun TerminalSubScreen(
                                 sshTestStatus = null
                                 sshSaveFeedback = null
                             },
-                            label = { Text("Port") },
+                            label = { Text(L.common.port) },
                             modifier = Modifier.weight(1f),
                             singleLine = true,
                             shape = RoundedCornerShape(8.dp)
@@ -4004,7 +4266,7 @@ private fun TerminalSubScreen(
                                 sshTestStatus = null
                                 sshSaveFeedback = null
                             },
-                            label = { Text("User") },
+                            label = { Text(L.common.user) },
                             modifier = Modifier.weight(1f),
                             singleLine = true,
                             shape = RoundedCornerShape(8.dp)
@@ -4016,7 +4278,7 @@ private fun TerminalSubScreen(
                                 sshTestStatus = null
                                 sshSaveFeedback = null
                             },
-                            label = { Text("Password") },
+                            label = { Text(L.settings.dialog.password) },
                             modifier = Modifier.weight(1f),
                             singleLine = true,
                             shape = RoundedCornerShape(8.dp)
@@ -4038,16 +4300,16 @@ private fun TerminalSubScreen(
                     OutlinedButton(
                         onClick = {
                             isTestingSsh = true
-                            sshTestStatus = "Testing SSH connection to $hostState..."
+                            sshTestStatus = L.settings.dialog.testingSshConnectionToHoststate(hostState)
                             coroutineScope.launch {
-                                val res = com.example.gemini.data.ssh.TermuxSshManager.testConnection(
+                                val res = com.example.gemini.data.ssh.SshSessionManager.testConnection(
                                     host = hostState.trim(),
                                     port = portState.toIntOrNull() ?: sshPort,
                                     user = userState.trim(),
                                     pass = passState
                                 )
                                 isTestingSsh = false
-                                sshTestStatus = if (res.isSuccess) "✓ SSH connection successful!" else "✗ Failed: ${res.exceptionOrNull()?.localizedMessage ?: "Connection refused"}"
+                                sshTestStatus = if (res.isSuccess) L.settings.dialog.sshConnectionSuccessful else "✗ Failed: ${res.exceptionOrNull()?.localizedMessage ?: "Connection refused"}"
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -4058,7 +4320,7 @@ private fun TerminalSubScreen(
                             CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(8.dp))
                         }
-                        Text("Test SSH Connection", fontSize = 12.sp)
+                        Text(L.settings.dialog.testSshConnection, fontSize = 12.sp)
                     }
 
                     if (sshSaveFeedback != null) {
@@ -4084,7 +4346,7 @@ private fun TerminalSubScreen(
                         onClick = {
                             val p = portState.toIntOrNull() ?: sshPort
                             onSaveSshSettings(hostState.trim(), p, userState.trim(), passState)
-                            sshSaveFeedback = "✓ SSH settings saved successfully!"
+                            sshSaveFeedback = L.settings.dialog.sshSettingsSavedSuccessfully
                         },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(8.dp),
@@ -4092,66 +4354,23 @@ private fun TerminalSubScreen(
                     ) {
                         Icon(imageVector = Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Save SSH Settings", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text(L.settings.dialog.saveSshSettings, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
-                } else {
-                    // Local tools mode details
-                    Spacer(modifier = Modifier.height(14.dp))
-                    HorizontalDivider(thickness = 0.6.dp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column {
-                            Text("Embedded Linux Rootfs", fontSize = 13.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                            Text(text = if (isLocalToolsInstalled) "Installed and ready" else "Not installed (>30MB download)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = if (isLocalToolsInstalled) QuotaGreen.copy(alpha = 0.15f) else ClaudeTerracotta.copy(alpha = 0.15f)
-                        ) {
-                            Text(
-                                text = if (isLocalToolsInstalled) "Installed ✓" else "Not Installed",
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isLocalToolsInstalled) QuotaGreen else ClaudeTerracotta,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
-
+                } else if (!remoteMode) {
                     Spacer(modifier = Modifier.height(10.dp))
-
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        if (isLocalToolsInstalled) {
-                            OutlinedButton(
-                                onClick = { showResetWarningDialog = true },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red),
-                                border = BorderStroke(1.dp, Color.Red.copy(alpha = 0.4f))
-                            ) {
-                                Icon(imageVector = Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(15.dp), tint = Color.Red)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Delete All & Factory Reset", fontSize = 12.5.sp, color = Color.Red, fontWeight = FontWeight.SemiBold)
-                            }
-                        } else {
-                            Button(
-                                onClick = onInstallLocalTools,
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
-                            ) {
-                                Text("Download & Install Local Tools", fontSize = 12.5.sp)
-                            }
-                        }
-                    }
+                    Text(
+                        text = L.settings.dialog.terminalTabsOpenAShellWhere,
+                        fontSize = 11.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                    TextButton(onClick = onOpenRuntime) { Text(L.settings.dialog.whereAgentsRun, color = ClaudeTerracotta) }
                 }
             }
         }
 
         // Terminal Appearance Customization Card
         Text(
-            text = "Terminal Customization",
+            text = L.settings.dialog.terminalCustomization,
             fontSize = 14.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface
@@ -4170,7 +4389,7 @@ private fun TerminalSubScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Font Size", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                    Text(L.settings.dialog.fontSize, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                     Text("${fontSizeState}pt", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ClaudeTerracotta)
                 }
                 Slider(
@@ -4185,9 +4404,9 @@ private fun TerminalSubScreen(
                 )
 
                 // Cursor Style
-                Text("Cursor Style", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                Text(L.settings.dialog.cursorStyle, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    val cursorOptions = listOf("BLOCK" to "Block █", "UNDERLINE" to "Underline  ", "BAR" to "Bar |")
+                    val cursorOptions = listOf("BLOCK" to "Block █", "UNDERLINE" to L.settings.dialog.underline, "BAR" to "Bar |")
                     cursorOptions.forEach { (style, label) ->
                         val isSel = cursorStyleState == style
                         Surface(
@@ -4210,7 +4429,7 @@ private fun TerminalSubScreen(
                 }
 
                 // Buffer Size
-                Text("Scrollback Buffer", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                Text(L.settings.dialog.scrollbackBuffer, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -4223,7 +4442,7 @@ private fun TerminalSubScreen(
                         10000 to "10k",
                         20000 to "20k",
                         50000 to "50k",
-                        100000 to "Unlimited"
+                        100000 to L.settings.dialog.unlimited
                     )
                     buffers.forEach { (buf, label) ->
                         val isSel = bufferSizeState == buf || (buf == 100000 && bufferSizeState >= 100000)
@@ -4244,6 +4463,89 @@ private fun TerminalSubScreen(
                         }
                     }
                 }
+
+                // Floating session pill on/off
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text(L.settings.dialog.floatingSessionPill, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = L.settings.dialog.theSessionNameAtTheTop,
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Switch(
+                        checked = sessionPillEnabled,
+                        onCheckedChange = { enabled -> coroutineScope.launch { terminalPrefs.saveTerminalSessionPillEnabled(enabled) } },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = ClaudeTerracotta
+                        )
+                    )
+                }
+
+                // Where on the left edge the drawer swipe beats gesture navigation's Back
+                Column {
+                    Text(L.settings.dialog.drawerSwipeArea, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = L.settings.dialog.withGestureNavigationASwipeFrom,
+                        fontSize = 11.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("TOP" to L.settings.dialog.top, "MIDDLE" to L.settings.dialog.middle, "BOTTOM" to L.settings.dialog.bottom).forEach { (area, label) ->
+                            val isSel = drawerSwipeArea.equals(area, ignoreCase = true)
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { coroutineScope.launch { terminalPrefs.saveTerminalDrawerSwipeArea(area) } },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSel) ClaudeTerracotta else MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(1.dp, if (isSel) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                            ) {
+                                Box(modifier = Modifier.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                    Text(text = label, fontSize = 11.5.sp, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium, color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurface)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Keyboard input mode: text mode (keyboard toolbar + clipboard) or key presses only (TYPE_NULL)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text(L.settings.dialog.characterBasedInput, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = L.settings.dialog.forKeyboardsThatMisbehaveInThe,
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Switch(
+                        checked = charBasedInput,
+                        onCheckedChange = { enabled -> coroutineScope.launch { terminalPrefs.saveTerminalCharBasedInput(enabled) } },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = ClaudeTerracotta
+                        )
+                    )
+                }
             }
         }
 
@@ -4256,7 +4558,27 @@ private fun TerminalSubScreen(
         ) {
             Icon(imageVector = Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Launch Terminal Now", fontWeight = FontWeight.Bold)
+            Text(L.settings.dialog.launchTerminalNow, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+/**
+ * "Delete all app data": a warning, the typed confirmation, a countdown, then Android wipes AntiGem's data (the app
+ * closes). [show] opens it; [onShown] resets the caller's flag.
+ */
+@Composable
+internal fun FactoryResetDialogs(show: Boolean, onShown: () -> Unit) {
+    val context = LocalContext.current
+    var showResetWarningDialog by remember { mutableStateOf(false) }
+    var showResetPasswordDialog by remember { mutableStateOf(false) }
+    var resetPasswordInput by remember { mutableStateOf("") }
+    var showShutdownCountdownDialog by remember { mutableStateOf(false) }
+    var countdownSeconds by remember { mutableIntStateOf(5) }
+    LaunchedEffect(show) {
+        if (show) {
+            showResetWarningDialog = true
+            onShown()
         }
     }
 
@@ -4273,7 +4595,7 @@ private fun TerminalSubScreen(
             },
             title = {
                 Text(
-                    text = "Delete All & Factory Reset?",
+                    text = L.settings.dialog.deleteAllFactoryReset,
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -4281,7 +4603,7 @@ private fun TerminalSubScreen(
             },
             text = {
                 Text(
-                    text = "Warning: This will perform an Android OS-level data wipe. All installed packages, rootfs, dotfiles, app settings, and history will be completely cleared.\n\nThe app will close and start completely fresh on next launch. Are you sure you want to proceed?",
+                    text = L.settings.dialog.warningThisWillPerformAnAndroid,
                     fontSize = 13.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -4296,7 +4618,7 @@ private fun TerminalSubScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text("Yes, Continue", fontWeight = FontWeight.Bold, color = Color.White)
+                    Text(L.settings.dialog.yesContinue, fontWeight = FontWeight.Bold, color = Color.White)
                 }
             },
             dismissButton = {
@@ -4304,7 +4626,7 @@ private fun TerminalSubScreen(
                     onClick = { showResetWarningDialog = false },
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text("Cancel")
+                    Text(L.common.cancel)
                 }
             },
             shape = RoundedCornerShape(16.dp),
@@ -4313,7 +4635,7 @@ private fun TerminalSubScreen(
     }
 
     if (showResetPasswordDialog) {
-        val isMatch = resetPasswordInput.trim() == "iknowwhatiamdoing"
+        val isMatch = resetPasswordInput.trim() == "iknowwhatiamdoing"  // i18n: keep (compared with what the user types)
         AlertDialog(
             onDismissRequest = { showResetPasswordDialog = false },
             icon = {
@@ -4326,7 +4648,7 @@ private fun TerminalSubScreen(
             },
             title = {
                 Text(
-                    text = "Confirm Full App Wipe",
+                    text = L.settings.dialog.confirmFullAppWipe,
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -4335,7 +4657,7 @@ private fun TerminalSubScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "To confirm and permanently wipe all app data and local rootfs, type the confirmation phrase exactly as shown below:",
+                        text = L.settings.dialog.toConfirmAndPermanentlyWipeAll,
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -4344,7 +4666,7 @@ private fun TerminalSubScreen(
                         shape = RoundedCornerShape(6.dp)
                     ) {
                         Text(
-                            text = "iknowwhatiamdoing",
+                            text = "iknowwhatiamdoing", // typed back and compared: never translated  // i18n: keep (compared with what the user types)
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             color = ClaudeTerracotta,
@@ -4378,7 +4700,7 @@ private fun TerminalSubScreen(
                     ),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text("Delete All Data", fontWeight = FontWeight.Bold, color = Color.White)
+                    Text(L.settings.dialog.deleteAllData, fontWeight = FontWeight.Bold, color = Color.White)
                 }
             },
             dismissButton = {
@@ -4386,7 +4708,7 @@ private fun TerminalSubScreen(
                     onClick = { showResetPasswordDialog = false },
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text("Cancel")
+                    Text(L.common.cancel)
                 }
             },
             shape = RoundedCornerShape(16.dp),
@@ -4438,14 +4760,14 @@ private fun TerminalSubScreen(
                     }
 
                     Text(
-                        text = "Factory Reset in Progress",
+                        text = L.settings.dialog.factoryResetInProgress,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
 
                     Text(
-                        text = "AntiGem is wiping all local app data, rootfs, and settings.\n\nThe app will automatically close in $countdownSeconds seconds. Simply re-open AntiGem to start fresh.",
+                        text = L.settings.dialog.antigemIsWipingAllLocalApp(countdownSeconds),
                         fontSize = 13.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -4491,6 +4813,9 @@ private fun BackupsSubScreen(
     var showServerRunningAlert by remember { mutableStateOf<String?>(null) }
 
     var showBackupChatsPasswordDialog by remember { mutableStateOf(false) }
+    // Linux environment backup: asks whether SSH keys and sign-ins go in too (off unless the user ticks it)
+    var showEnvBackupDialog by remember { mutableStateOf(false) }
+    var envBackupIncludeSecrets by remember { mutableStateOf(false) }
     var backupChatsPassword by remember { mutableStateOf("") }
     var showBackupPasswordText by remember { mutableStateOf(false) }
 
@@ -4541,7 +4866,7 @@ private fun BackupsSubScreen(
         } else {
             val permission = ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
             if (permission != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(context, "Storage permission needed to save to /sdcard/Download", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, L.settings.dialog.storagePermissionNeededToSaveTo, Toast.LENGTH_SHORT).show()
             }
             onGranted()
         }
@@ -4575,14 +4900,14 @@ private fun BackupsSubScreen(
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Server is running",
+                            text = L.settings.dialog.serverIsRunning,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Stop it before backing up or restoring, so no database is written to while it's being archived.",
+                            text = L.settings.dialog.stopItBeforeBackingUpOr,
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                             lineHeight = 17.sp
@@ -4598,38 +4923,33 @@ private fun BackupsSubScreen(
                         ) {
                             Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Stop server", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                            Text(L.settings.dialog.stopServer, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         }
                     }
                 }
             }
         }
 
-        BackupSectionLabel("Backup")
+        BackupSectionLabel(L.settings.dialog.backup)
 
         BackupActionCard(
             icon = Icons.Outlined.Inventory2,
-            title = "Linux environment",
-            subtitle = "Installed packages, binaries and your home folder",
-            description = "A full, portable copy of the Linux system (/usr) and \$HOME dotfiles. Sockets, caches and auth tokens are left out.",
+            title = L.settings.dialog.linuxEnvironment,
+            subtitle = L.settings.dialog.installedPackagesBinariesAndYourHome,
+            description = L.settings.dialog.aFullPortableCopyOfThe,
             savesTo = "Download/Antigem/backups/bootrapz_<time>.zip",
             cardBg = cardBg,
             cardBorder = cardBorder
         ) {
             BackupPrimaryButton(
-                text = "Back up environment",
+                text = L.settings.dialog.backUpEnvironment,
                 icon = Icons.Outlined.Archive,
                 onClick = {
                     if (isAnyServerRunning) {
-                        showServerRunningAlert = "Backup Rootfs"
+                        showServerRunningAlert = L.settings.dialog.backupRootfs
                     } else {
-                        requestStoragePermission {
-                            activeScriptExecution = ScriptExecutionInfo(
-                                title = "Rootfs System Packager",
-                                scriptName = "backup_bootstrap",
-                                args = emptyList()
-                            )
-                        }
+                        envBackupIncludeSecrets = false
+                        showEnvBackupDialog = true
                     }
                 }
             )
@@ -4637,20 +4957,20 @@ private fun BackupsSubScreen(
 
         BackupActionCard(
             icon = Icons.Outlined.Chat,
-            title = "Chats & credentials",
-            subtitle = "Conversations, transcripts, skills and login",
-            description = "Archives your ~/.gemini folder: chat history databases, transcripts, summaries, custom skills and the auth token. Can be password-protected.",
+            title = L.settings.dialog.chatsCredentials,
+            subtitle = L.settings.dialog.conversationsTranscriptsSkillsAndLogin,
+            description = L.settings.dialog.archivesYourGeminiFolderChatHistory,
             savesTo = "Download/Antigem/backups/agy_chats_backup_<time>.zip",
-            note = "Includes your login token. Don't share this file: anyone who has it can sign in as you.",
+            note = L.settings.dialog.includesYourLoginTokenDontShare,
             cardBg = cardBg,
             cardBorder = cardBorder
         ) {
             BackupPrimaryButton(
-                text = "Back up chats",
+                text = L.settings.dialog.backUpChats,
                 icon = Icons.Outlined.CloudUpload,
                 onClick = {
                     if (isAnyServerRunning) {
-                        showServerRunningAlert = "Backup Chats"
+                        showServerRunningAlert = L.settings.dialog.backupChats
                     } else {
                         showBackupChatsPasswordDialog = true
                     }
@@ -4659,22 +4979,22 @@ private fun BackupsSubScreen(
         }
 
         Spacer(modifier = Modifier.height(4.dp))
-        BackupSectionLabel("Restore")
+        BackupSectionLabel(L.settings.dialog.restore)
 
         BackupActionCard(
             icon = Icons.Outlined.SettingsBackupRestore,
-            title = "Chats & credentials",
-            subtitle = "From a chats backup zip",
-            description = "Restores chats, the conversation index and your login. Your current ~/.gemini is kept as ~/.gemini.bak first, so nothing is lost.",
+            title = L.settings.dialog.chatsCredentials,
+            subtitle = L.settings.dialog.fromAChatsBackupZip,
+            description = L.settings.dialog.restoresChatsTheConversationIndexAnd,
             cardBg = cardBg,
             cardBorder = cardBorder
         ) {
             BackupSecondaryButton(
-                text = "Restore chats",
+                text = L.settings.dialog.restoreChats,
                 icon = Icons.Outlined.SettingsBackupRestore,
                 onClick = {
                     if (isAnyServerRunning) {
-                        showServerRunningAlert = "Restore Chats"
+                        showServerRunningAlert = L.settings.dialog.restoreChats2
                     } else {
                         showRestoreChatsDialog = true
                     }
@@ -4683,18 +5003,18 @@ private fun BackupsSubScreen(
         }
 
         Spacer(modifier = Modifier.height(4.dp))
-        BackupSectionLabel("Projects")
+        BackupSectionLabel(L.common.projects)
 
         BackupActionCard(
             icon = Icons.Outlined.Workspaces,
             title = "IDE & AGY projects",
-            subtitle = "Back up or restore selected projects",
-            description = "Pick projects from the IDE and chat workspaces. Choose a clean git-aware archive (skips node_modules and build output) or a full copy. Restores map back to the right folders, with a safety backup.",
+            subtitle = L.settings.dialog.backUpOrRestoreSelectedProjects,
+            description = L.settings.dialog.pickProjectsFromTheIdeAnd,
             cardBg = cardBg,
             cardBorder = cardBorder
         ) {
             BackupSecondaryButton(
-                text = "Manage projects",
+                text = L.settings.dialog.manageProjects,
                 icon = Icons.Outlined.FolderZip,
                 onClick = { showProjectsBackupRestoreDialog = true }
             )
@@ -4706,10 +5026,10 @@ private fun BackupsSubScreen(
         AlertDialog(
             onDismissRequest = { showServerRunningAlert = null },
             icon = { Icon(Icons.Outlined.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-            title = { Text("Stop the server first", fontWeight = FontWeight.SemiBold) },
+            title = { Text(L.settings.dialog.stopTheServerFirst, fontWeight = FontWeight.SemiBold) },
             text = {
                 Text(
-                    "The AGY IDE Bridge and Hub server must be offline before running '$actionName'. Would you like to stop the server now?",
+                    L.settings.dialog.theAgyIdeBridgeAndHub(actionName),
                     fontSize = 13.sp
                 )
             },
@@ -4718,17 +5038,17 @@ private fun BackupsSubScreen(
                     onClick = {
                         onStopServer()
                         showServerRunningAlert = null
-                        Toast.makeText(context, "Stopping server... Please re-run $actionName once stopped.", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, L.settings.dialog.stoppingServerPleaseReRunActionname(actionName), Toast.LENGTH_SHORT).show()
                     },
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta, contentColor = Color.White)
                 ) {
-                    Text("Stop server", fontWeight = FontWeight.SemiBold)
+                    Text(L.settings.dialog.stopServer, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showServerRunningAlert = null }) {
-                    Text("Cancel")
+                    Text(L.common.cancel)
                 }
             }
         )
@@ -4739,19 +5059,19 @@ private fun BackupsSubScreen(
         AlertDialog(
             onDismissRequest = { showBackupChatsPasswordDialog = false },
             icon = { Icon(Icons.Outlined.CloudUpload, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-            title = { Text("Back up chats", fontWeight = FontWeight.SemiBold) },
+            title = { Text(L.settings.dialog.backUpChats, fontWeight = FontWeight.SemiBold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "Optionally enter a password to encrypt your backup zip archive. Leave empty for an unencrypted standard zip.",
+                        text = L.settings.dialog.optionallyEnterAPasswordToEncrypt,
                         fontSize = 12.5.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
                     )
-                    BackupNote("Don't share this file: anyone who has it can sign in as you.")
+                    BackupNote(L.settings.dialog.dontShareThisFileAnyoneWho)
                     OutlinedTextField(
                         value = backupChatsPassword,
                         onValueChange = { backupChatsPassword = it },
-                        label = { Text("Encryption Password (Optional)") },
+                        label = { Text(L.settings.dialog.encryptionPasswordOptional) },
                         singleLine = true,
                         visualTransformation = if (showBackupPasswordText) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
@@ -4775,7 +5095,7 @@ private fun BackupsSubScreen(
                         backupChatsPassword = ""
                         requestStoragePermission {
                             activeScriptExecution = ScriptExecutionInfo(
-                                title = "AGY Chats & Credentials Backup",
+                                title = L.settings.dialog.agyChatsCredentialsBackup,
                                 scriptName = "backup_chats",
                                 args = if (pass.isNotEmpty()) listOf("", pass) else emptyList()
                             )
@@ -4784,7 +5104,7 @@ private fun BackupsSubScreen(
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta, contentColor = Color.White)
                 ) {
-                    Text("Start backup", fontWeight = FontWeight.SemiBold)
+                    Text(L.settings.dialog.startBackup, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
@@ -4792,8 +5112,69 @@ private fun BackupsSubScreen(
                     showBackupChatsPasswordDialog = false
                     backupChatsPassword = ""
                 }) {
-                    Text("Cancel")
+                    Text(L.common.cancel)
                 }
+            }
+        )
+    }
+
+    if (showEnvBackupDialog) {
+        AlertDialog(
+            onDismissRequest = { showEnvBackupDialog = false },
+            icon = { Icon(Icons.Outlined.Archive, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+            title = { Text(L.settings.dialog.backUpEnvironment, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = L.settings.dialog.savesTheLinuxSystemAndYour,
+                        fontSize = 12.5.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { envBackupIncludeSecrets = !envBackupIncludeSecrets }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(checked = envBackupIncludeSecrets, onCheckedChange = { envBackupIncludeSecrets = it })
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(L.settings.dialog.includeSshKeysAndSignIns, fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+                            Text(
+                                L.settings.dialog.sshKeysAgentAndGithubLogins,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                    if (envBackupIncludeSecrets) {
+                        BackupNote(L.settings.dialog.neverShareThisBackupWithAnyone)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val includeSecrets = envBackupIncludeSecrets
+                        showEnvBackupDialog = false
+                        requestStoragePermission {
+                            activeScriptExecution = ScriptExecutionInfo(
+                                title = L.settings.dialog.rootfsSystemPackager,
+                                scriptName = "backup_bootstrap",
+                                args = if (includeSecrets) listOf("--include-secrets") else emptyList()
+                            )
+                        }
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta, contentColor = Color.White)
+                ) {
+                    Text(L.settings.dialog.startBackup, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEnvBackupDialog = false }) { Text(L.common.cancel) }
             }
         )
     }
@@ -4803,11 +5184,11 @@ private fun BackupsSubScreen(
         AlertDialog(
             onDismissRequest = { showRestoreChatsDialog = false },
             icon = { Icon(Icons.Outlined.SettingsBackupRestore, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-            title = { Text("Restore chats", fontWeight = FontWeight.SemiBold) },
+            title = { Text(L.settings.dialog.restoreChats, fontWeight = FontWeight.SemiBold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "Select your backup zip archive to restore. Note: your existing ~/.gemini directory will be safely renamed to ~/.gemini.bak first.",
+                        text = L.settings.dialog.selectYourBackupZipArchiveTo,
                         fontSize = 12.5.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
                     )
@@ -4815,12 +5196,12 @@ private fun BackupsSubScreen(
                     OutlinedTextField(
                         value = restoreFilePath,
                         onValueChange = { restoreFilePath = it },
-                        label = { Text("Backup Archive Path") },
+                        label = { Text(L.settings.dialog.backupArchivePath) },
                         placeholder = { Text("/sdcard/Download/agy_chats_backup_....zip") },
                         singleLine = true,
                         trailingIcon = {
                             IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
-                                Icon(Icons.Outlined.FolderOpen, contentDescription = "Choose File", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Icon(Icons.Outlined.FolderOpen, contentDescription = L.settings.dialog.chooseFile, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -4829,7 +5210,7 @@ private fun BackupsSubScreen(
                     OutlinedTextField(
                         value = restorePassword,
                         onValueChange = { restorePassword = it },
-                        label = { Text("Archive Password (if encrypted)") },
+                        label = { Text(L.settings.dialog.archivePasswordIfEncrypted) },
                         singleLine = true,
                         visualTransformation = if (showRestorePasswordText) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
@@ -4854,7 +5235,7 @@ private fun BackupsSubScreen(
                         restoreFilePath = ""
                         restorePassword = ""
                         activeScriptExecution = ScriptExecutionInfo(
-                            title = "Restore AGY Chats & Credentials",
+                            title = L.settings.dialog.restoreAgyChatsCredentials,
                             scriptName = "restore_chats",
                             args = if (pass.isNotEmpty()) listOf(path, pass) else listOf(path)
                         )
@@ -4863,7 +5244,7 @@ private fun BackupsSubScreen(
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta, contentColor = Color.White)
                 ) {
-                    Text("Start restore", fontWeight = FontWeight.SemiBold)
+                    Text(L.settings.dialog.startRestore, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
@@ -4872,7 +5253,7 @@ private fun BackupsSubScreen(
                     restoreFilePath = ""
                     restorePassword = ""
                 }) {
-                    Text("Cancel")
+                    Text(L.common.cancel)
                 }
             }
         )
@@ -5066,7 +5447,7 @@ data class ProjectBackupManifestItem(
     val backupSubpath: String
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun ProjectsBackupRestoreDialog(
     onDismiss: () -> Unit,
@@ -5076,8 +5457,8 @@ private fun ProjectsBackupRestoreDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var selectedTab by remember { mutableIntStateOf(0) } // 0 = Backup, 1 = Restore
-    // Projects list from TermuxDaemonManager
-    val allProjects by TermuxDaemonManager.projects.collectAsState()
+    // Projects list from IdeDaemonManager
+    val allProjects by IdeDaemonManager.projects.collectAsState()
     val homeDir = remember { LocalEnvironmentManager.getHomeDir(context).absolutePath.trimEnd('/') }
 
     fun normalizeProjectPath(p: String, home: String): String {
@@ -5099,12 +5480,12 @@ private fun ProjectsBackupRestoreDialog(
         val normHome = normalizeProjectPath(homeDir, homeDir)
         allProjects.filter { proj ->
             val p = normalizeProjectPath(proj.path, normHome)
-            p.isNotBlank() && p != normHome && p != "/" && p != "/data/data/com.termux/files" && p != "/data/data/com.termux"
+            p.isNotBlank() && p != normHome && p != "/" && p != "/data/data/${BuildConfig.APPLICATION_ID}/files" && p != "/data/data/${BuildConfig.APPLICATION_ID}"
         }.distinctBy { normalizeProjectPath(it.path, normHome) }
     }
 
     LaunchedEffect(Unit) {
-        TermuxDaemonManager.loadProjects()
+        IdeDaemonManager.loadProjects()
     }
 
     // --- Backup Tab State ---
@@ -5202,7 +5583,7 @@ private fun ProjectsBackupRestoreDialog(
                     val file = File(path)
                     if (!file.exists()) {
                         withContext(Dispatchers.Main) {
-                            archiveError = "Archive file not found at: $path"
+                            archiveError = L.settings.dialog.archiveFileNotFoundAtPath(path)
                             manifestProjects = emptyList()
                             isInspectingArchive = false
                         }
@@ -5247,7 +5628,7 @@ private fun ProjectsBackupRestoreDialog(
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
-                        archiveError = "Error reading archive: ${e.message}"
+                        archiveError = L.settings.dialog.errorReadingArchiveMessage(e.message)
                         manifestProjects = emptyList()
                         isInspectingArchive = false
                     }
@@ -5322,20 +5703,20 @@ private fun ProjectsBackupRestoreDialog(
                         }
                         Column {
                             Text(
-                                text = "Projects Backup & Restore",
+                                text = L.settings.dialog.projectsBackupRestore,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "Backup IDE & AGY workspaces or restore from zip",
+                                text = L.settings.dialog.backupIdeAgyWorkspacesOrRestore,
                                 fontSize = 11.5.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             )
                         }
                     }
                     IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Default.Close, contentDescription = L.common.close, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
 
@@ -5353,13 +5734,13 @@ private fun ProjectsBackupRestoreDialog(
                     Tab(
                         selected = selectedTab == 0,
                         onClick = { selectedTab = 0 },
-                        text = { Text("Backup Projects", fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal) },
+                        text = { Text(L.settings.dialog.backupProjects, fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal) },
                         icon = { Icon(Icons.Outlined.Archive, contentDescription = null, modifier = Modifier.size(16.dp)) }
                     )
                     Tab(
                         selected = selectedTab == 1,
                         onClick = { selectedTab = 1 },
-                        text = { Text("Restore Projects", fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal) },
+                        text = { Text(L.settings.dialog.restoreProjects, fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal) },
                         icon = { Icon(Icons.Outlined.SettingsBackupRestore, contentDescription = null, modifier = Modifier.size(16.dp)) }
                     )
                 }
@@ -5385,7 +5766,7 @@ private fun ProjectsBackupRestoreDialog(
                         ) {
                             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
-                                    text = "Backup Format & Packaging Mode:",
+                                    text = L.settings.dialog.backupFormatPackagingMode,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onSurface
@@ -5415,8 +5796,8 @@ private fun ProjectsBackupRestoreDialog(
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Column {
-                                                Text("Git-Aware (Clean)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (backupMode == "git") ClaudeTerracotta else MaterialTheme.colorScheme.onSurface)
-                                                Text("Excludes node_modules & build caches", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text(L.settings.dialog.gitAwareClean, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (backupMode == "git") ClaudeTerracotta else MaterialTheme.colorScheme.onSurface)
+                                                Text(L.settings.dialog.excludesNodeModulesBuildCaches, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             }
                                         }
                                     }
@@ -5442,8 +5823,8 @@ private fun ProjectsBackupRestoreDialog(
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Column {
-                                                Text("Full Raw Archive", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (backupMode == "full") ClaudeTerracotta else MaterialTheme.colorScheme.onSurface)
-                                                Text("All files, symlinks & permissions as-is", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text(L.settings.dialog.fullRawArchive, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (backupMode == "full") ClaudeTerracotta else MaterialTheme.colorScheme.onSurface)
+                                                Text(L.settings.dialog.allFilesSymlinksPermissionsAsIs, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             }
                                         }
                                     }
@@ -5458,7 +5839,7 @@ private fun ProjectsBackupRestoreDialog(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "Select Projects ($selectedCount/${validProjects.size}):",
+                                text = L.settings.dialog.selectProjectsSelectedcount(selectedCount, validProjects.size),
                                 fontSize = 12.5.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -5471,13 +5852,13 @@ private fun ProjectsBackupRestoreDialog(
                                     },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                                 ) {
-                                    Text("Select All", fontSize = 11.5.sp, color = ClaudeTerracotta)
+                                    Text(L.settings.dialog.selectAll, fontSize = 11.5.sp, color = ClaudeTerracotta)
                                 }
                                 TextButton(
                                     onClick = { selectedProjectPaths.clear() },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                                 ) {
-                                    Text("Deselect All", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(L.settings.dialog.deselectAll, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                         }
@@ -5491,7 +5872,7 @@ private fun ProjectsBackupRestoreDialog(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = "No open projects or workspaces detected in the IDE.",
+                                    text = L.settings.dialog.noOpenProjectsOrWorkspacesDetected,
                                     fontSize = 12.5.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -5583,9 +5964,10 @@ private fun ProjectsBackupRestoreDialog(
                                                     modifier = Modifier.size(20.dp)
                                                 )
                                                 Column(modifier = Modifier.weight(1f)) {
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                    FlowRow(
+                                                        itemVerticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(2.dp)
                                                     ) {
                                                         Text(
                                                             text = proj.name,
@@ -5613,7 +5995,7 @@ private fun ProjectsBackupRestoreDialog(
                                                                 color = com.example.gemini.theme.AppColors.success.copy(alpha = 0.15f)
                                                             ) {
                                                                 Text(
-                                                                    text = "Included with ${parentProj.name}",
+                                                                    text = L.settings.dialog.includedWithName(parentProj.name),
                                                                     fontSize = 9.5.sp,
                                                                     fontWeight = FontWeight.Medium,
                                                                     color = com.example.gemini.theme.AppColors.success,
@@ -5626,7 +6008,7 @@ private fun ProjectsBackupRestoreDialog(
                                                                 color = ClaudeTerracotta.copy(alpha = 0.12f)
                                                             ) {
                                                                 Text(
-                                                                    text = "Inside ${parentProj.name}",
+                                                                    text = L.settings.dialog.insideName(parentProj.name),
                                                                     fontSize = 9.5.sp,
                                                                     fontWeight = FontWeight.Medium,
                                                                     color = ClaudeTerracotta,
@@ -5655,7 +6037,7 @@ private fun ProjectsBackupRestoreDialog(
                         Button(
                             onClick = {
                                 if (effectiveBackupPaths.isEmpty()) {
-                                    Toast.makeText(context, "Please select at least one project to backup", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, L.settings.dialog.pleaseSelectAtLeastOneProject, Toast.LENGTH_SHORT).show()
                                     return@Button
                                 }
                                 onRequestStoragePermission {
@@ -5664,7 +6046,7 @@ private fun ProjectsBackupRestoreDialog(
                                     onDismiss()
                                     onExecuteScript(
                                         ScriptExecutionInfo(
-                                            title = "Projects Backup Packager",
+                                            title = L.settings.dialog.projectsBackupPackager,
                                             scriptName = "backup_projects",
                                             args = listOf("", backupMode, "--paths-file", targetsFile.absolutePath)
                                         )
@@ -5679,8 +6061,8 @@ private fun ProjectsBackupRestoreDialog(
                             Icon(Icons.Outlined.Archive, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (effectiveBackupPaths.size == selectedCount) "Backup $selectedCount Selected Projects"
-                                       else "Backup $selectedCount Selected Projects (${effectiveBackupPaths.size} workspace roots)",
+                                text = if (effectiveBackupPaths.size == selectedCount) L.settings.dialog.backupSelectedcountSelectedProjects(selectedCount)
+                                       else L.settings.dialog.backupSelectedcountSelectedProjects2(selectedCount, effectiveBackupPaths.size),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp
                             )
@@ -5698,7 +6080,7 @@ private fun ProjectsBackupRestoreDialog(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Text(
-                            text = "Select a projects backup archive (.zip) to restore projects to their workspace locations.",
+                            text = L.settings.dialog.selectAProjectsBackupArchiveZip,
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
                         )
@@ -5710,12 +6092,12 @@ private fun ProjectsBackupRestoreDialog(
                                 restoreZipPath = it
                                 inspectArchive(it.trim())
                             },
-                            label = { Text("Projects Archive File Path") },
+                            label = { Text(L.settings.dialog.projectsArchiveFilePath) },
                             placeholder = { Text("/sdcard/Download/Antigem/backups/projects_backup_....zip") },
                             singleLine = true,
                             trailingIcon = {
                                 IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
-                                    Icon(Icons.Outlined.FolderOpen, contentDescription = "Choose File", tint = ClaudeTerracotta)
+                                    Icon(Icons.Outlined.FolderOpen, contentDescription = L.settings.dialog.chooseFile, tint = ClaudeTerracotta)
                                 }
                             },
                             modifier = Modifier.fillMaxWidth()
@@ -5729,7 +6111,7 @@ private fun ProjectsBackupRestoreDialog(
                                 modifier = Modifier.padding(vertical = 4.dp)
                             ) {
                                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = ClaudeTerracotta)
-                                Text("Inspecting archive contents & manifest...", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(L.settings.dialog.inspectingArchiveContentsManifest, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
 
@@ -5757,7 +6139,7 @@ private fun ProjectsBackupRestoreDialog(
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         manifestBackupMode?.let { mode ->
-                                            Text("Mode: $mode", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(L.settings.dialog.modeMode(mode), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
 
@@ -5772,7 +6154,7 @@ private fun ProjectsBackupRestoreDialog(
                                                 Text(item.name, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                                 if (item.originalPath.isNotBlank()) {
                                                     Text(
-                                                        "Target: ${item.originalPath}",
+                                                        L.settings.dialog.targetOriginalpath(item.originalPath),
                                                         fontSize = 10.sp,
                                                         fontFamily = FontFamily.Monospace,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -5794,7 +6176,7 @@ private fun ProjectsBackupRestoreDialog(
                         ) {
                             Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(
-                                    text = "If Target Project Folder Already Exists:",
+                                    text = L.settings.dialog.ifTargetProjectFolderAlreadyExists,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onSurface
@@ -5817,8 +6199,8 @@ private fun ProjectsBackupRestoreDialog(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Column {
-                                        Text("Move existing to .bak.<timestamp> (Safe & Recommended)", fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
-                                        Text("Preserves existing code in a backup folder before extracting", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(L.settings.dialog.moveExistingToBakTimestampSafe, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                                        Text(L.settings.dialog.preservesExistingCodeInABackup, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
 
@@ -5839,8 +6221,8 @@ private fun ProjectsBackupRestoreDialog(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Column {
-                                        Text("Overwrite files in-place", fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
-                                        Text("Overwrites matching files directly inside target directory", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(L.settings.dialog.overwriteFilesInPlace, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                                        Text(L.settings.dialog.overwritesMatchingFilesDirectlyInside, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
                             }
@@ -5857,15 +6239,15 @@ private fun ProjectsBackupRestoreDialog(
                                 colors = CheckboxDefaults.colors(checkedColor = ClaudeTerracotta),
                                 modifier = Modifier.size(20.dp)
                             )
-                            Text("Restore to custom parent directory", fontSize = 12.sp)
+                            Text(L.settings.dialog.restoreToCustomParentDirectory, fontSize = 12.sp)
                         }
 
                         if (useCustomRestoreDir) {
                             OutlinedTextField(
                                 value = customRestoreDir,
                                 onValueChange = { customRestoreDir = it },
-                                label = { Text("Custom Restore Directory") },
-                                placeholder = { Text("/data/data/com.termux/files/home/restored_projects") },
+                                label = { Text(L.settings.dialog.customRestoreDirectory) },
+                                placeholder = { Text("/data/data/${BuildConfig.APPLICATION_ID}/files/home/restored_projects") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -5878,20 +6260,20 @@ private fun ProjectsBackupRestoreDialog(
                             onClick = {
                                 val zipPath = restoreZipPath.trim()
                                 if (zipPath.isBlank()) {
-                                    Toast.makeText(context, "Please enter or pick a backup zip file", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, L.settings.dialog.pleaseEnterOrPickABackup, Toast.LENGTH_SHORT).show()
                                     return@Button
                                 }
                                 onDismiss()
                                 onExecuteScript(
                                     ScriptExecutionInfo(
-                                        title = "Projects Archive Restorer",
+                                        title = L.settings.dialog.projectsArchiveRestorer,
                                         scriptName = "restore_projects",
                                         args = listOf(zipPath, conflictStrategy, if (useCustomRestoreDir) customRestoreDir.trim() else "")
                                     )
                                 )
                                 scope.launch(Dispatchers.IO) {
                                     delay(1500)
-                                    TermuxDaemonManager.loadProjects()
+                                    IdeDaemonManager.loadProjects()
                                 }
                             },
                             enabled = restoreZipPath.isNotBlank(),
@@ -5901,7 +6283,7 @@ private fun ProjectsBackupRestoreDialog(
                         ) {
                             Icon(Icons.Outlined.SettingsBackupRestore, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Start Restore (restore_projects)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(L.settings.dialog.startRestoreRestoreProjects, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     }
                 }
@@ -6023,7 +6405,7 @@ private fun ScriptExecutionDialog(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = if (isRunning) "Executing in rootfs environment..." else if (exitCode == 0) "Completed in ${(durationMs / 1000.0)}s (Exit: 0)" else "Finished with error (Exit: $exitCode)",
+                                text = if (isRunning) L.settings.dialog.executingInRootfsEnvironment else if (exitCode == 0) L.settings.dialog.completedInValueSExit0((durationMs / 1000.0)) else L.settings.dialog.finishedWithErrorExitExitcode(exitCode),
                                 fontSize = 11.5.sp,
                                 color = if (isRunning) GeminiBlue else if (exitCode == 0) QuotaGreen else Color.Red
                             )
@@ -6032,7 +6414,7 @@ private fun ScriptExecutionDialog(
 
                     if (!isRunning) {
                         IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Close, contentDescription = L.common.close, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -6087,14 +6469,14 @@ private fun ScriptExecutionDialog(
                                 executionJob?.cancel()
                                 isRunning = false
                                 exitCode = 130
-                                logs.add("🛑 Execution cancelled by user.")
+                                logs.add(L.settings.dialog.executionCancelledByUser)
                             },
                             shape = RoundedCornerShape(8.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = com.example.gemini.theme.AppColors.danger)
                         ) {
                             Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Stop Execution", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(L.settings.dialog.stopExecution, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     } else {
                         Button(
@@ -6104,7 +6486,7 @@ private fun ScriptExecutionDialog(
                                 containerColor = if (exitCode == 0) QuotaGreen else MaterialTheme.colorScheme.primary
                             )
                         ) {
-                            Text("Done", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(L.common.done, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     }
                 }
@@ -6226,7 +6608,7 @@ private fun CommandExecutionDialog(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = if (isRunning) "Executing in terminal environment..." else if (exitCode == 0) "Completed successfully in ${(durationMs / 1000.0)}s" else "Finished with exit code $exitCode",
+                                text = if (isRunning) L.settings.dialog.executingInTerminalEnvironment else if (exitCode == 0) L.settings.dialog.completedSuccessfullyInValueS((durationMs / 1000.0)) else L.settings.dialog.finishedWithExitCodeExitcode(exitCode),
                                 fontSize = 11.5.sp,
                                 color = if (isRunning) GeminiBlue else if (exitCode == 0) QuotaGreen else Color.Red
                             )
@@ -6235,7 +6617,7 @@ private fun CommandExecutionDialog(
 
                     if (!isRunning) {
                         IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Close, contentDescription = L.common.close, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -6289,14 +6671,14 @@ private fun CommandExecutionDialog(
                                 executionJob?.cancel()
                                 isRunning = false
                                 exitCode = 130
-                                logs.add("🛑 Execution cancelled by user.")
+                                logs.add(L.settings.dialog.executionCancelledByUser)
                             },
                             shape = RoundedCornerShape(8.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = com.example.gemini.theme.AppColors.danger)
                         ) {
                             Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Stop Execution", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(L.settings.dialog.stopExecution, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     } else {
                         Button(
@@ -6306,7 +6688,7 @@ private fun CommandExecutionDialog(
                                 containerColor = if (exitCode == 0) QuotaGreen else MaterialTheme.colorScheme.primary
                             )
                         ) {
-                            Text("Done", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(L.common.done, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     }
                 }
@@ -6376,13 +6758,13 @@ private fun DataProtectionSubScreen(
                 )
                 Column {
                     Text(
-                        text = "Data Loss Prevention",
+                        text = L.settings.dialog.dataLossPrevention,
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Protect your local Linux environment, CLI tools, databases, and AI coding workspaces from accidental wipe or uninstall.",
+                        text = L.settings.dialog.protectYourLocalLinuxEnvironmentCli,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         lineHeight = 16.sp
@@ -6419,13 +6801,13 @@ private fun DataProtectionSubScreen(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Accidental Uninstall Protection",
+                            text = L.settings.dialog.accidentalUninstallProtection,
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = if (isAdminActive) "Status: Protected (Device Admin Active)" else "Status: Inactive (Optional)",
+                            text = if (isAdminActive) L.settings.dialog.statusProtectedDeviceAdminActive else L.settings.dialog.statusInactiveOptional,
                             fontSize = 12.sp,
                             color = if (isAdminActive) QuotaGreen else Color.Gray,
                             fontWeight = FontWeight.SemiBold
@@ -6435,7 +6817,7 @@ private fun DataProtectionSubScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "Why enable this? AntiGem hosts a full local Linux environment with your Node/Python packages, Git repos, and active coding projects. An accidental drag-to-uninstall from the home screen wipes all of it permanently.\n\nActivating Android Device Administrator greys out the 'Uninstall' button at the OS level across phone launchers. You can safely disable this anytime if you wish to uninstall.",
+                    text = L.settings.dialog.whyEnableThisAntigemHostsA,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     lineHeight = 16.sp
@@ -6451,7 +6833,7 @@ private fun DataProtectionSubScreen(
                     ) {
                         Icon(Icons.Outlined.LockOpen, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Deactivate Uninstall Protection", fontSize = 13.sp)
+                        Text(L.settings.dialog.deactivateUninstallProtection, fontSize = 13.sp)
                     }
                 } else {
                     Button(
@@ -6464,7 +6846,7 @@ private fun DataProtectionSubScreen(
                                 try {
                                     context.startActivity(AntiGemDeviceAdminReceiver.createDeviceAdminSettingsIntent())
                                 } catch (e2: Exception) {
-                                    Toast.makeText(context, "Could not open Device Admin: ${e2.message}", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, L.settings.dialog.couldNotOpenDeviceAdminMessage(e2.message), Toast.LENGTH_SHORT).show()
                                 }
                             }
                         },
@@ -6474,7 +6856,7 @@ private fun DataProtectionSubScreen(
                     ) {
                         Icon(Icons.Outlined.Security, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Activate Uninstall Protection", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text(L.settings.dialog.activateUninstallProtection, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -6483,7 +6865,7 @@ private fun DataProtectionSubScreen(
                             try {
                                 context.startActivity(AntiGemDeviceAdminReceiver.createDeviceAdminSettingsIntent())
                             } catch (e: Exception) {
-                                Toast.makeText(context, "Could not open settings: ${e.message}", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, L.settings.dialog.couldNotOpenSettingsMessage(e.message), Toast.LENGTH_SHORT).show()
                             }
                         },
                         shape = RoundedCornerShape(10.dp),
@@ -6491,7 +6873,7 @@ private fun DataProtectionSubScreen(
                     ) {
                         Icon(Icons.Outlined.Settings, contentDescription = null, modifier = Modifier.size(15.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Open System Device Admin Apps List", fontSize = 12.5.sp)
+                        Text(L.settings.dialog.openSystemDeviceAdminAppsList, fontSize = 12.5.sp)
                     }
 
                     if (Build.VERSION.SDK_INT >= 33) {
@@ -6503,7 +6885,7 @@ private fun DataProtectionSubScreen(
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Text(
-                                    text = "💡 Sideloaded App Tip (Android 13+): If your phone shows 'Restricted setting', open App Info > tap the 3 dots in the top right > select 'Allow restricted settings'.",
+                                    text = L.settings.dialog.sideloadedAppTipAndroid13If,
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                                     lineHeight = 15.sp
@@ -6521,7 +6903,7 @@ private fun DataProtectionSubScreen(
                                     },
                                     modifier = Modifier.align(Alignment.End)
                                 ) {
-                                    Text("Open App Info", fontSize = 11.5.sp)
+                                    Text(L.settings.dialog.openAppInfo, fontSize = 11.5.sp)
                                 }
                             }
                         }
@@ -6558,15 +6940,15 @@ private fun DataProtectionSubScreen(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "App Info Clear Data Shield",
+                            text = L.settings.dialog.appInfoClearDataShield,
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = if (isShieldEnabled) "Enabled (Replaces Clear Data with Space Manager)" else "Disabled (Standard OS Clear Data)",
+                            text = L.settings.dialog.replacesClearDataWithTheSpace,
                             fontSize = 12.sp,
-                            color = if (isShieldEnabled) GeminiBlue else Color.Gray
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
                     }
                     Switch(
@@ -6580,7 +6962,7 @@ private fun DataProtectionSubScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "When enabled (default), tapping 'Clear Data' in Android's phone Settings > App Info opens AntiGem's Safe Space Manager instead of wiping everything instantly with one click. This prevents accidental wipes and allows safe cache-only cleanup.\n\nYou can toggle this off anytime if you prefer the standard raw Android 'Clear Data' button.",
+                    text = L.settings.dialog.whenEnabledDefaultTappingClearData,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     lineHeight = 16.sp
@@ -6592,7 +6974,7 @@ private fun DataProtectionSubScreen(
                         try {
                             context.startActivity(Intent(context, ManageSpaceActivity::class.java))
                         } catch (e: Exception) {
-                            Toast.makeText(context, "Could not open Space Manager: ${e.message}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, L.settings.dialog.couldNotOpenSpaceManagerMessage(e.message), Toast.LENGTH_SHORT).show()
                         }
                     },
                     shape = RoundedCornerShape(10.dp),
@@ -6600,7 +6982,7 @@ private fun DataProtectionSubScreen(
                 ) {
                     Icon(Icons.Outlined.Storage, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Open Space Manager Preview", fontSize = 13.sp)
+                    Text(L.settings.dialog.openSpaceManagerPreview, fontSize = 13.sp)
                 }
             }
         }
@@ -6610,10 +6992,10 @@ private fun DataProtectionSubScreen(
         AlertDialog(
             onDismissRequest = { showDeactivateAdminDialog = false },
             icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Disable Uninstall Protection?") },
+            title = { Text(L.settings.dialog.disableUninstallProtection) },
             text = {
                 Text(
-                    "This will remove AntiGem's Device Admin status. The app will become vulnerable to accidental home-screen uninstallation.",
+                    L.settings.dialog.thisWillRemoveAntigemsDeviceAdmin,
                     fontSize = 13.sp
                 )
             },
@@ -6630,12 +7012,12 @@ private fun DataProtectionSubScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("Deactivate")
+                    Text(L.settings.dialog.deactivate)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showDeactivateAdminDialog = false }) {
-                    Text("Cancel")
+                    Text(L.common.cancel)
                 }
             }
         )
@@ -6688,14 +7070,14 @@ private fun CommandsSubScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Global Security & Policies",
+                        text = L.settings.dialog.globalSecurityPolicies,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Live daemon settings applied across all workspaces via Jetbox",
+                        text = L.settings.dialog.liveDaemonSettingsAppliedAcrossAll,
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -6713,7 +7095,7 @@ private fun CommandsSubScreen(
                     } else {
                         Icon(
                             imageVector = Icons.Default.Refresh,
-                            contentDescription = "Refresh",
+                            contentDescription = L.common.refresh,
                             tint = ClaudeTerracotta,
                             modifier = Modifier.size(20.dp)
                         )
@@ -6738,7 +7120,7 @@ private fun CommandsSubScreen(
                             color = ClaudeTerracotta
                         )
                         Text(
-                            text = "Connecting to AGY Hub & loading permissions...",
+                            text = L.settings.dialog.connectingToAgyHubLoadingPermissions,
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -6763,14 +7145,14 @@ private fun CommandsSubScreen(
                             modifier = Modifier.size(48.dp)
                         )
                         Text(
-                            text = "Unable to Load Permissions from AGY Hub",
+                            text = L.settings.dialog.unableToLoadPermissionsFromAgy,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                         Text(
-                            text = "Could not retrieve daemon permissions and security state:\n${globalSettingsError ?: "RPC connection failed"}\n\nMake sure AGY is running (e.g. agy --hub) and check your Server settings.",
+                            text = L.settings.dialog.couldNotRetrieveDaemonPermissionsAnd(globalSettingsError ?: L.settings.dialog.rpcConnectionFailed),
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -6784,7 +7166,7 @@ private fun CommandsSubScreen(
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Retry Connection", fontWeight = FontWeight.Bold)
+                            Text(L.settings.dialog.retryConnection, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -6818,14 +7200,14 @@ private fun CommandsSubScreen(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Global Security & Policies",
+                    text = L.settings.dialog.globalSecurityPolicies,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Live daemon settings applied across all workspaces via Jetbox",
+                    text = L.settings.dialog.liveDaemonSettingsAppliedAcrossAll,
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -6843,7 +7225,7 @@ private fun CommandsSubScreen(
                 } else {
                     Icon(
                         imageVector = Icons.Default.Refresh,
-                        contentDescription = "Refresh",
+                        contentDescription = L.common.refresh,
                         tint = ClaudeTerracotta,
                         modifier = Modifier.size(20.dp)
                     )
@@ -6856,14 +7238,14 @@ private fun CommandsSubScreen(
         // ==========================================
         Column {
             Text(
-                text = "Artifact Review Policy",
+                text = L.settings.dialog.artifactReviewPolicy,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "Controls whether the assistant asks you to review and approve documents it creates.",
+                text = L.settings.dialog.controlsWhetherTheAssistantAsksYou,
                 fontSize = 11.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -6898,7 +7280,7 @@ private fun CommandsSubScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "⚡ Auto (Turbo)",
+                            text = L.settings.dialog.autoTurbo,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (isAutoReview) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface
@@ -6912,7 +7294,7 @@ private fun CommandsSubScreen(
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Edits and creates documents immediately without asking.",
+                        text = L.settings.dialog.editsAndCreatesDocumentsImmediately,
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 15.sp
@@ -6942,7 +7324,7 @@ private fun CommandsSubScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "✋ Always Ask",
+                            text = L.settings.dialog.alwaysAsk,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (isAlwaysReview) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface
@@ -6956,7 +7338,7 @@ private fun CommandsSubScreen(
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Suspends and requests your approval before saving document edits.",
+                        text = L.settings.dialog.suspendsAndRequestsYourApprovalBefore,
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 15.sp
@@ -6972,14 +7354,14 @@ private fun CommandsSubScreen(
         // ==========================================
         Column {
             Text(
-                text = "Security Presets",
+                text = L.settings.dialog.securityPresets,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "Controls terminal command execution and file access outside working directory.",
+                text = L.settings.dialog.controlsTerminalCommandExecutionAndFile,
                 fontSize = 11.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -6988,24 +7370,24 @@ private fun CommandsSubScreen(
         val presets = listOf(
             Triple(
                 "DEFAULT",
-                "🛡️ Default Mode",
-                "Terminal commands require confirmation. Files outside workspace require confirmation."
-            ) to ("Recommended" to com.example.gemini.theme.AppColors.accentTeal),
+                L.settings.dialog.defaultMode,
+                L.settings.dialog.terminalCommandsRequireConfirmationFiles
+            ) to (L.common.recommended to com.example.gemini.theme.AppColors.accentTeal),
             Triple(
                 "FULL_MACHINE",
-                "💻 Full Machine Mode",
-                "Terminal commands require confirmation. Full read/write access to all files on device."
-            ) to ("Open Files" to com.example.gemini.theme.AppColors.warning),
+                L.settings.dialog.fullMachineMode,
+                L.settings.dialog.terminalCommandsRequireConfirmationFull
+            ) to (L.settings.dialog.openFiles to com.example.gemini.theme.AppColors.warning),
             Triple(
                 "TURBO",
-                "⚡ Turbo Mode",
-                "Full auto-run: terminal commands execute immediately and all files can be accessed."
-            ) to ("Full Auto" to QuotaGreen),
+                L.settings.dialog.turboMode,
+                L.settings.dialog.fullAutoRunTerminalCommandsExecute
+            ) to (L.settings.dialog.fullAuto to QuotaGreen),
             Triple(
                 "CUSTOM",
-                "⚙️ Custom Granular Mode",
-                "Configure terminal command execution and external filesystem permissions separately."
-            ) to ("Custom" to com.example.gemini.theme.AppColors.accentAlt)
+                L.settings.dialog.customGranularMode,
+                L.settings.dialog.configureTerminalCommandExecutionAnd
+            ) to (L.settings.dialog.custom to com.example.gemini.theme.AppColors.accentAlt)
         )
 
         presets.forEach { (presetInfo, badgeInfo) ->
@@ -7119,7 +7501,7 @@ private fun CommandsSubScreen(
 
                         // Granular: Terminal Execution
                         Text(
-                            text = "Terminal Command Execution:",
+                            text = L.settings.dialog.terminalCommandExecution,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -7135,13 +7517,13 @@ private fun CommandsSubScreen(
                             FilterChip(
                                 selected = isTermOff,
                                 onClick = { onSetGlobalCustomTerminalPolicy("CASCADE_COMMANDS_AUTO_EXECUTION_OFF") },
-                                label = { Text("✋ Ask Every Time", fontSize = 11.sp) },
+                                label = { Text(L.settings.dialog.askEveryTime, fontSize = 11.sp) },
                                 modifier = Modifier.weight(1f)
                             )
                             FilterChip(
                                 selected = isTermEager,
                                 onClick = { onSetGlobalCustomTerminalPolicy("CASCADE_COMMANDS_AUTO_EXECUTION_EAGER") },
-                                label = { Text("⚡ Auto-Run (Eager)", fontSize = 11.sp) },
+                                label = { Text(L.settings.dialog.autoRunEager, fontSize = 11.sp) },
                                 modifier = Modifier.weight(1f)
                             )
                         }
@@ -7150,7 +7532,7 @@ private fun CommandsSubScreen(
 
                         // Granular: Files Outside Workspace
                         Text(
-                            text = "Files Outside Workspace:",
+                            text = L.settings.dialog.filesOutsideWorkspace,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -7212,15 +7594,14 @@ private fun CommandsSubScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                         Text(
-                            text = "Terminal Sandbox Isolation",
+                            text = L.settings.dialog.terminalSandboxIsolation,
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = if (activeSandbox) "Enabled: Isolates commands in sandbox without host network access."
-                            else "Disabled (Recommended for Hub): Commands execute directly in your Termux / Linux environment.",
+                            text = L.settings.dialog.isolatesCommandsInASandboxWithout,
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 15.sp
@@ -7245,14 +7626,14 @@ private fun CommandsSubScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                         Text(
-                            text = "Review File Edits & Writes",
+                            text = L.settings.dialog.reviewFileEditsWrites,
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Prompt for confirmation before assistant applies file edits or writes code to disk.",
+                            text = L.settings.dialog.promptForConfirmationBeforeAssistant,
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 15.sp
@@ -7300,14 +7681,14 @@ private fun CommandsSubScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Granular Permission Grants",
+                        text = L.settings.dialog.granularPermissionGrants,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Explicit Allow, Deny, and Ask rules for commands, MCP tools, and file paths (globalPermissionGrants).",
+                        text = L.settings.dialog.explicitAllowDenyAndAskRules,
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -7321,7 +7702,7 @@ private fun CommandsSubScreen(
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Add Rule", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(L.settings.dialog.addRule, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -7366,13 +7747,13 @@ private fun CommandsSubScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = if (allRules.isEmpty()) "No custom permission rules configured." else "No rules match the selected filter.",
+                        text = if (allRules.isEmpty()) L.settings.dialog.noCustomPermissionRulesConfigured else L.settings.dialog.noRulesMatchTheSelectedFilter,
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Tools and file accesses will use your global presets above. Click \"Add Rule\" to whitelist, blacklist, or prompt for specific commands, MCP tools, or file paths.",
+                        text = L.settings.dialog.toolsAndFileAccessesWillUse,
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -7430,7 +7811,7 @@ private fun CommandsSubScreen(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.DeleteOutline,
-                                        contentDescription = "Delete Rule",
+                                        contentDescription = L.settings.dialog.deleteRule,
                                         tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
                                         modifier = Modifier.size(18.dp)
                                     )
@@ -7510,10 +7891,11 @@ private fun CommandsSubScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Project Overrides & Inheritance",
+                    text = L.settings.dialog.projectOverridesInheritance,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp)
                 )
                 if (projectsList.isNotEmpty()) {
                     Text(
@@ -7526,7 +7908,7 @@ private fun CommandsSubScreen(
             }
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "Projects can inherit the global policy above or maintain specific overrides.",
+                text = L.settings.dialog.projectsCanInheritTheGlobalPolicy,
                 fontSize = 11.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -7548,7 +7930,7 @@ private fun CommandsSubScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = "No workspace projects registered yet on AGY Hub.",
+                    text = L.settings.dialog.noWorkspaceProjectsRegisteredYetOn,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(14.dp)
@@ -7593,7 +7975,7 @@ private fun CommandsSubScreen(
                                     color = if (project.isInheritingGlobal) QuotaGreen.copy(alpha = 0.15f) else com.example.gemini.theme.AppColors.warning.copy(alpha = 0.15f)
                                 ) {
                                     Text(
-                                        text = if (project.isInheritingGlobal) "🌐 Inherits Global" else "⚠️ Custom Override",
+                                        text = if (project.isInheritingGlobal) L.settings.dialog.inheritsGlobal else L.settings.dialog.customOverride,
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = if (project.isInheritingGlobal) QuotaGreen else com.example.gemini.theme.AppColors.warning,
@@ -7618,13 +8000,13 @@ private fun CommandsSubScreen(
                                         shape = RoundedCornerShape(8.dp),
                                         colors = ButtonDefaults.buttonColors(containerColor = QuotaGreen)
                                     ) {
-                                        Text("🌐 Set to Inherit Global Settings", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        Text(L.settings.dialog.setToInheritGlobalSettings, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                     }
                                     Spacer(modifier = Modifier.height(8.dp))
                                 }
 
                                 Text(
-                                    text = "Set Project Override:",
+                                    text = L.settings.dialog.setProjectOverride,
                                     fontSize = 11.5.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onSurface
@@ -7683,14 +8065,14 @@ private fun CommandsSubScreen(
         // ==========================================
         Column {
             Text(
-                text = "Default Approval Scope",
+                text = L.settings.dialog.defaultApprovalScope,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "When you click approve on a tool prompt, how long should permission remain granted?",
+                text = L.settings.dialog.whenYouClickApproveOnA,
                 fontSize = 11.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -7701,9 +8083,9 @@ private fun CommandsSubScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val scopes = listOf(
-                Triple("PERMISSION_SCOPE_ONCE", "Run Once", "Single call"),
-                Triple("PERMISSION_SCOPE_CONVERSATION", "This Chat", "Current session"),
-                Triple("PERMISSION_SCOPE_WORKSPACE", "Workspace", "Always")
+                Triple("PERMISSION_SCOPE_ONCE", L.settings.dialog.runOnce, L.settings.dialog.singleCall),
+                Triple("PERMISSION_SCOPE_CONVERSATION", L.settings.dialog.thisChat, L.settings.dialog.currentSession),
+                Triple("PERMISSION_SCOPE_WORKSPACE", L.common.workspace, L.common.always)
             )
 
             scopes.forEach { (scopeKey, title, subtitle) ->
@@ -7759,7 +8141,7 @@ private fun CommandsSubScreen(
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = "Live synced with AGY Hub via Jetbox & Project APIs with zero local-storage desync.",
+                    text = L.settings.dialog.liveSyncedWithAgyHubVia,
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurface,
                     lineHeight = 16.sp
@@ -7777,10 +8159,10 @@ private data class PermissionGrantRule(
 ) {
     val actionLabel: String
         get() = when (action.lowercase()) {
-            "command" -> "Command"
-            "mcp" -> "MCP Tool"
-            "read_file" -> "Read File"
-            "write_file" -> "Write File"
+            "command" -> L.common.command
+            "mcp" -> L.settings.dialog.mcpTool
+            "read_file" -> L.settings.dialog.readFile
+            "write_file" -> L.settings.dialog.writeFile
             else -> action
         }
 
@@ -7828,16 +8210,16 @@ private fun AddPermissionRuleDialog(
     }
 
     val actionOptions = listOf(
-        Triple("command", "⌨️ Command", "Terminal bash command pattern"),
-        Triple("mcp", "🔌 MCP Tool", "MCP server or tool pattern"),
-        Triple("read_file", "📖 Read File", "Filesystem directory or file read path"),
-        Triple("write_file", "✏️ Write File", "Filesystem directory or file write path")
+        Triple("command", "⌨️ Command", L.settings.dialog.terminalBashCommandPattern),
+        Triple("mcp", L.settings.dialog.mcpTool2, L.settings.dialog.mcpServerOrToolPattern),
+        Triple("read_file", L.settings.dialog.readFile2, L.settings.dialog.filesystemDirectoryOrFileReadPath),
+        Triple("write_file", L.settings.dialog.writeFile2, L.settings.dialog.filesystemDirectoryOrFileWritePath)
     )
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(text = "Add Permission Grant Rule", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(text = L.settings.dialog.addPermissionGrantRule, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         },
         text = {
             Column(
@@ -7847,7 +8229,7 @@ private fun AddPermissionRuleDialog(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 // Step 1: Select Action
-                Text("1. Operation Type", fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                Text(L.settings.dialog.n1OperationType, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     actionOptions.forEach { (key, label, desc) ->
                         val isSel = selectedAction == key
@@ -7889,7 +8271,7 @@ private fun AddPermissionRuleDialog(
                 }
 
                 // Step 2: Target Pattern
-                Text("2. Target Pattern", fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                Text(L.settings.dialog.n2TargetPattern, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
                 OutlinedTextField(
                     value = patternText,
                     onValueChange = { patternText = it },
@@ -7897,11 +8279,11 @@ private fun AddPermissionRuleDialog(
                     placeholder = {
                         Text(
                             when (selectedAction) {
-                                "command" -> "e.g. npm*, git*, *"
+                                "command" -> L.settings.dialog.eGNpmGit
                                 "mcp" -> "e.g. *, local_tools/*"
-                                "read_file" -> "e.g. /home/cat/.gemini, *"
-                                "write_file" -> "e.g. /home/cat/extra/*, *"
-                                else -> "e.g. *"
+                                "read_file" -> L.settings.dialog.eGHomeCatGemini
+                                "write_file" -> L.settings.dialog.eGHomeCatExtra
+                                else -> L.settings.dialog.eG
                             },
                             fontSize = 12.sp
                         )
@@ -7927,7 +8309,7 @@ private fun AddPermissionRuleDialog(
                 }
 
                 // Step 3: Decision
-                Text("3. Policy Decision", fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                Text(L.settings.dialog.n3PolicyDecision, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -7983,12 +8365,12 @@ private fun AddPermissionRuleDialog(
                 shape = RoundedCornerShape(8.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
             ) {
-                Text("Save Rule", fontWeight = FontWeight.Bold)
+                Text(L.settings.dialog.saveRule, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(L.common.cancel)
             }
         }
     )
@@ -8030,7 +8412,7 @@ private fun DiagnosticsSubScreen(
             onDismissRequest = { pendingInspectorRestart = null },
             title = {
                 Text(
-                    text = "Restart Required",
+                    text = L.settings.dialog.restartRequired,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -8038,9 +8420,9 @@ private fun DiagnosticsSubScreen(
             text = {
                 Text(
                     text = if (targetState) {
-                        "Enabling Network Inspector requires restarting the app so OkHttp can attach live routing interceptors. Restart now?"
+                        L.settings.dialog.enablingNetworkInspectorRequires
                     } else {
-                        "Disabling Network Inspector requires restarting the app to restore 100% native network performance with zero debug interceptors. Restart now?"
+                        L.settings.dialog.disablingNetworkInspectorRequires
                     },
                     fontSize = 13.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -8063,14 +8445,14 @@ private fun DiagnosticsSubScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = com.example.gemini.theme.AppColors.info),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text("Restart App", fontWeight = FontWeight.Bold)
+                    Text(L.settings.dialog.restartApp, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = { pendingInspectorRestart = null }
                 ) {
-                    Text("Cancel")
+                    Text(L.common.cancel)
                 }
             },
             containerColor = MaterialTheme.colorScheme.surface,
@@ -8118,28 +8500,14 @@ private fun DiagnosticsSubScreen(
                             }
                         }
                         Column {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(
-                                    text = "Network Inspector (Live Logs)",
-                                    fontSize = 14.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = if (isNetworkInspectorEnabled) com.example.gemini.theme.AppColors.info.copy(alpha = 0.15f) else Color.Gray.copy(alpha = 0.15f)
-                                ) {
-                                    Text(
-                                        text = if (isNetworkInspectorEnabled) "ACTIVE" else "OFF",
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isNetworkInspectorEnabled) com.example.gemini.theme.AppColors.info else Color.Gray,
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
-                                    )
-                                }
-                            }
                             Text(
-                                text = "Inspect IDE Bridge HTTP & AGY Daemon gRPC calls in real-time",
+                                text = L.settings.dialog.networkInspectorLiveLogs,
+                                fontSize = 14.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = L.settings.dialog.inspectIdeBridgeHttpAgyDaemon,
                                 fontSize = 11.5.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             )
@@ -8159,7 +8527,7 @@ private fun DiagnosticsSubScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "Zero-overhead architecture: When disabled, OkHttp calls execute at 100% native speed with zero allocations or buffering.",
+                    text = L.settings.dialog.zeroOverheadArchitectureWhenDisabled,
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
                     lineHeight = 16.sp
@@ -8178,13 +8546,13 @@ private fun DiagnosticsSubScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Floating Network Bubble",
+                                text = L.settings.dialog.floatingNetworkBubble,
                                 fontSize = 13.5.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "Show on-screen draggable pill with live call count & streams",
+                                text = L.settings.dialog.showOnScreenDraggablePillWith,
                                 fontSize = 11.5.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             )
@@ -8218,7 +8586,7 @@ private fun DiagnosticsSubScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Open Network Inspector (${logs.size} calls recorded)",
+                            text = L.settings.dialog.openNetworkInspectorLogscountCalls(logs.size),
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = Color.White
@@ -8260,28 +8628,14 @@ private fun DiagnosticsSubScreen(
                             }
                         }
                         Column {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(
-                                    text = "Floating Diagnostics HUD",
-                                    fontSize = 14.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = if (isFloatingDiagnosticsEnabled) QuotaGreen.copy(alpha = 0.15f) else Color.Gray.copy(alpha = 0.15f)
-                                ) {
-                                    Text(
-                                        text = if (isFloatingDiagnosticsEnabled) "VISIBLE" else "DISABLED",
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isFloatingDiagnosticsEnabled) QuotaGreen else Color.Gray,
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
-                                    )
-                                }
-                            }
                             Text(
-                                text = "Live on-screen thread, queue & connection monitor",
+                                text = L.settings.dialog.floatingDiagnosticsHud,
+                                fontSize = 14.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = L.settings.dialog.liveOnScreenThreadQueueConnection,
                                 fontSize = 11.5.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             )
@@ -8299,7 +8653,7 @@ private fun DiagnosticsSubScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "Displays a draggable, real-time floating status pill showing active JVM threads, running and queued gRPC/HTTP calls, connection pool socket counts, and main-thread IO latency. Tap the floating pill anytime to expand detailed metrics.",
+                    text = L.settings.dialog.displaysADraggableRealTimeFloating,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
                     lineHeight = 17.sp
@@ -8319,7 +8673,7 @@ private fun DiagnosticsSubScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "Current Telemetry Snapshot",
+                    text = L.settings.dialog.currentTelemetrySnapshot,
                     fontSize = 13.5.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -8332,7 +8686,7 @@ private fun DiagnosticsSubScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Active JVM Threads:",
+                        text = L.settings.dialog.activeJvmThreads,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
@@ -8350,12 +8704,12 @@ private fun DiagnosticsSubScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "AgyHub Stream / RPCs:",
+                        text = L.settings.dialog.agyhubStreamRpcs,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                     Text(
-                        text = "Run=${snapshot.agyRunning} | Q=${snapshot.agyQueued}",
+                        text = L.settings.dialog.runAgyrunningQAgyqueued(snapshot.agyRunning, snapshot.agyQueued),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace,
@@ -8368,12 +8722,12 @@ private fun DiagnosticsSubScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "AgyHub Connection Pool:",
+                        text = L.settings.dialog.agyhubConnectionPool,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                     Text(
-                        text = "${snapshot.agyConns} sockets (${snapshot.agyIdleConns} idle)",
+                        text = L.settings.dialog.agyconnsSocketsAgyidleconnsIdle(snapshot.agyConns, snapshot.agyIdleConns),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace,
@@ -8386,12 +8740,12 @@ private fun DiagnosticsSubScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "IDE Bridge Sockets:",
+                        text = L.settings.dialog.ideBridgeSockets,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                     Text(
-                        text = "${snapshot.ideConns} sockets (${snapshot.ideIdleConns} idle)",
+                        text = L.settings.dialog.ideconnsSocketsIdeidleconnsIdle(snapshot.ideConns, snapshot.ideIdleConns),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace,
@@ -8404,12 +8758,12 @@ private fun DiagnosticsSubScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Event Loop IO Latency:",
+                        text = L.settings.dialog.eventLoopIoLatency,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                     Text(
-                        text = if (snapshot.ioLagMs >= 0) "${snapshot.ioLagMs} ms" else "ERR",
+                        text = if (snapshot.ioLagMs >= 0) "${snapshot.ioLagMs} ms" else L.settings.dialog.err,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace,
@@ -8420,7 +8774,7 @@ private fun DiagnosticsSubScreen(
                 if (snapshot.threadGroupSummary.isNotBlank()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Thread Breakdown:",
+                        text = L.settings.dialog.threadBreakdown,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
@@ -8513,22 +8867,20 @@ private fun AboutSubScreen(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "Antigravity Mobile Hub & AI Pair Programmer",
+                    text = L.settings.dialog.antigravityMobileHubAiPairProgrammer,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
                 )
                 Spacer(modifier = Modifier.height(10.dp))
-                val isSharedBuild = BuildConfig.IS_SHARED_USER_ID
-                val variantBadgeText = if (isSharedBuild) "Shared UID" else "Standalone"
-                val variantColor = if (isSharedBuild) QuotaGreen else com.example.gemini.theme.AppColors.accentAlt
+                val variantColor = QuotaGreen
                 Surface(
                     shape = RoundedCornerShape(20.dp),
                     color = variantColor.copy(alpha = 0.12f),
                     border = BorderStroke(1.dp, variantColor.copy(alpha = 0.3f))
                 ) {
                     Text(
-                        text = "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) • $variantBadgeText",
+                        text = "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace,
@@ -8551,7 +8903,7 @@ private fun AboutSubScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Build & Package Information",
+                    text = L.settings.dialog.buildPackageInformation,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -8564,7 +8916,7 @@ private fun AboutSubScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "IDE Bridge (connected)",
+                        text = L.settings.dialog.ideBridgeConnected,
                         fontSize = 12.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -8572,9 +8924,9 @@ private fun AboutSubScreen(
                     val bridgeMatches = bv != null && com.example.gemini.data.remote.BridgeInfo.compareBridgeToApp(bv) == 0
                     Text(
                         text = when {
-                            bv == null -> "not connected"
+                            bv == null -> L.settings.dialog.notConnected
                             bridgeMatches -> "v$bv"
-                            else -> "v$bv (app is v${BuildConfig.VERSION_NAME})"
+                            else -> L.settings.dialog.vBvAppIsVVersion(bv, BuildConfig.VERSION_NAME)
                         },
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.Medium,
@@ -8591,7 +8943,7 @@ private fun AboutSubScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Application ID",
+                        text = L.settings.dialog.applicationId,
                         fontSize = 12.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -8612,7 +8964,7 @@ private fun AboutSubScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Build Type",
+                        text = L.settings.dialog.buildType,
                         fontSize = 12.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -8633,32 +8985,12 @@ private fun AboutSubScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Variant",
+                        text = L.settings.dialog.nativeArchitecture,
                         fontSize = 12.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = if (BuildConfig.IS_SHARED_USER_ID) "Termux (Shared UID)" else "Termux (Standalone)",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (BuildConfig.IS_SHARED_USER_ID) QuotaGreen else MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Native Architecture",
-                        fontSize = 12.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a",
+                        text = Build.SUPPORTED_ABIS.firstOrNull() ?: L.settings.dialog.arm64V8a,
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.Medium,
                         fontFamily = FontFamily.Monospace,
@@ -8692,7 +9024,7 @@ private fun AboutSubScreen(
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            text = "Software Updates",
+                            text = L.settings.dialog.softwareUpdates,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -8701,7 +9033,7 @@ private fun AboutSubScreen(
                 }
 
                 Text(
-                    text = "Checks GitHub releases for new versions and downloads the matching APK directly.",
+                    text = L.settings.dialog.checksGithubReleasesForNewVersions,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 16.sp
@@ -8750,14 +9082,14 @@ private fun AboutSubScreen(
                                         updateCheckResultText = null
                                     } else {
                                         isUpdateCheckError = false
-                                        updateCheckResultText = "AntiGem is up to date (v${BuildConfig.VERSION_NAME})."
-                                        Toast.makeText(context, "AntiGem is up to date!", Toast.LENGTH_SHORT).show()
+                                        updateCheckResultText = L.settings.dialog.antigemIsUpToDateV(BuildConfig.VERSION_NAME)
+                                        Toast.makeText(context, L.settings.dialog.antigemIsUpToDate, Toast.LENGTH_SHORT).show()
                                     }
                                 }.onFailure { err ->
                                     isUpdateCheckError = true
-                                    val msg = err.localizedMessage ?: "Could not connect to GitHub"
+                                    val msg = err.localizedMessage ?: L.settings.dialog.couldNotConnectToGithub
                                     updateCheckResultText = msg
-                                    Toast.makeText(context, "Update check failed: $msg", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, L.settings.dialog.updateCheckFailedMsg(msg), Toast.LENGTH_LONG).show()
                                 }
                             }
                         }
@@ -8774,7 +9106,7 @@ private fun AboutSubScreen(
                             strokeWidth = 2.dp
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Checking GitHub...")
+                        Text(L.settings.dialog.checkingGithub)
                     } else {
                         Icon(
                             imageVector = Icons.Default.Refresh,
@@ -8782,7 +9114,7 @@ private fun AboutSubScreen(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Check for Updates")
+                        Text(L.settings.dialog.checkForUpdates)
                     }
                 }
             }
@@ -8803,7 +9135,8 @@ private fun AboutSubScreen(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.FolderZip,
@@ -8812,7 +9145,7 @@ private fun AboutSubScreen(
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            text = "AGY IDE Bridge Binary",
+                            text = L.settings.dialog.agyIdeBridgeBinary,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -8833,7 +9166,7 @@ private fun AboutSubScreen(
                 }
 
                 Text(
-                    text = "Export the compiled agy_ide_bridge daemon binary to your device's public Download folder to execute in custom chroots, Termux environments, or external terminals.",
+                    text = L.settings.dialog.exportTheCompiledAgyIdeBridge,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 16.sp
@@ -8846,7 +9179,7 @@ private fun AboutSubScreen(
                 ) {
                     Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            text = "Path: ${bridgeFile.absolutePath}",
+                            text = L.settings.dialog.pathAbsolutepath(bridgeFile.absolutePath),
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
@@ -8855,7 +9188,7 @@ private fun AboutSubScreen(
                             val sizeKb = bridgeSize / 1024
                             val dateStr = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(bridgeLastModified))
                             Text(
-                                text = "Size: $sizeKb KB • Modified: $dateStr",
+                                text = L.settings.dialog.sizeSizekbKbModifiedDatestr(sizeKb, dateStr),
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = QuotaGreen
@@ -8877,9 +9210,9 @@ private fun AboutSubScreen(
                                     isExportingBridge = false
                                     refreshBridgeStatus()
                                     if (exported != null && exported.exists()) {
-                                        Toast.makeText(context, "Saved agy_ide_bridge to Downloads!", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, L.settings.dialog.savedAgyIdeBridgeToDownloads, Toast.LENGTH_SHORT).show()
                                     } else {
-                                        Toast.makeText(context, "Failed to export bridge binary", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(context, L.settings.dialog.failedToExportBridgeBinary, Toast.LENGTH_LONG).show()
                                     }
                                 }
                             }
@@ -8902,7 +9235,7 @@ private fun AboutSubScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Export to Downloads", fontSize = 12.5.sp)
+                            Text(L.settings.dialog.exportToDownloads, fontSize = 12.5.sp)
                         }
                     }
 
@@ -8915,7 +9248,7 @@ private fun AboutSubScreen(
                                     }
                                     context.startActivity(intent)
                                 } catch (e: Exception) {
-                                    Toast.makeText(context, "Downloads: ${bridgeFile.absolutePath}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, L.settings.dialog.downloadsAbsolutepath(bridgeFile.absolutePath), Toast.LENGTH_LONG).show()
                                 }
                             },
                             modifier = Modifier.weight(0.7f),
@@ -8929,7 +9262,7 @@ private fun AboutSubScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("View File", fontSize = 12.5.sp, color = com.example.gemini.theme.AppColors.accentTeal)
+                            Text(L.settings.dialog.viewFile, fontSize = 12.5.sp, color = com.example.gemini.theme.AppColors.accentTeal)
                         }
                     }
                 }
@@ -8945,7 +9278,7 @@ private fun AboutSubScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Resources & Repository",
+                    text = L.settings.dialog.resourcesRepository,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -8957,7 +9290,7 @@ private fun AboutSubScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/santoshkurmi/antigem"))
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://discord.gg/pJvvTDTc6G"))
                             context.startActivity(intent)
                         }
                 ) {
@@ -8971,20 +9304,20 @@ private fun AboutSubScreen(
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Code,
+                                imageVector = Icons.Default.Forum,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.size(20.dp)
                             )
                             Column {
                                 Text(
-                                    text = "GitHub Repository",
+                                    text = L.settings.dialog.discordCommunity,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "github.com/santoshkurmi/antigem",
+                                    text = L.settings.dialog.getHelpShareBuildsIdeas,
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -9005,7 +9338,55 @@ private fun AboutSubScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/santoshkurmi/antigem/releases"))
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ochenafanbangla-glitch/JutiAgent"))
+                            context.startActivity(intent)
+                        }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Code,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Column {
+                                Text(
+                                    text = L.settings.dialog.githubRepository,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "github.com/ochenafanbangla-glitch/JutiAgent",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ochenafanbangla-glitch/JutiAgent/releases"))
                             context.startActivity(intent)
                         }
                 ) {
@@ -9026,13 +9407,13 @@ private fun AboutSubScreen(
                             )
                             Column {
                                 Text(
-                                    text = "Release Changelogs",
+                                    text = L.settings.dialog.releaseChangelogs,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "View tag notes & APK downloads",
+                                    text = L.settings.dialog.viewTagNotesApkDownloads,
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
