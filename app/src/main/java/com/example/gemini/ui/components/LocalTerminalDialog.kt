@@ -34,12 +34,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
@@ -56,8 +58,13 @@ import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.border
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.material.icons.automirrored.filled.KeyboardReturn
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import com.example.gemini.i18n.L
 
 enum class ModifierState {
     OFF,
@@ -65,9 +72,32 @@ enum class ModifierState {
     LOCKED
 }
 
+/**
+ * Focus the terminal and show the keyboard (a tap on it, the drawer's KEYBOARD). If refused, asked again a moment
+ * later (posted): older Android learns of the focus change late and refuses a request made right after it. Still
+ * refused with the keyboard hidden: the forced toggle Termux's own Keyboard button uses (only when hidden, as a
+ * toggle would otherwise close it).
+ */
+internal fun showTerminalKeyboard(tv: TerminalView) {
+    val imm = tv.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+    tv.requestFocus()
+    if (imm.showSoftInput(tv, 0)) return
+    tv.post {
+        if (imm.showSoftInput(tv, 0)) return@post
+        val imeShown = androidx.core.view.ViewCompat.getRootWindowInsets(tv)
+            ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()) == true
+        if (!imeShown) {
+            @Suppress("DEPRECATION")
+            imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+        }
+    }
+}
+
 @Composable
 fun LocalTerminalDialog(
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** The sessions drawer's gear; null = no gear (no settings screen where this terminal runs). */
+    onOpenSettings: (() -> Unit)? = null
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -76,7 +106,7 @@ fun LocalTerminalDialog(
             decorFitsSystemWindows = false
         )
     ) {
-        LocalTerminalContent(onClose = onDismiss)
+        LocalTerminalContent(onClose = onDismiss, onOpenSettings = onOpenSettings)
     }
 }
 
@@ -96,7 +126,11 @@ fun LocalTerminalContent(
     /** The screen whose keyboard focus this terminal takes; null = none (the Run screen's terminal). */
     focusScreenMode: com.example.gemini.AppViewMode? = com.example.gemini.AppViewMode.TERMINAL,
     /** Focus the terminal and open the keyboard when it appears; off for the Run screen (a build log, maybe off screen). */
-    showKeyboardOnOpen: Boolean = true
+    showKeyboardOnOpen: Boolean = true,
+    /** Whether this terminal is the screen shown now (hidden screens stay composed): a hidden one closes its sessions drawer. */
+    isVisible: Boolean = true,
+    /** The sessions drawer's gear: show Settings → Terminal; null = no gear. */
+    onOpenSettings: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
 
@@ -130,13 +164,20 @@ fun LocalTerminalContent(
         ?: sessions.firstOrNull()
 
     if (activeSession == null) {
+        // the first session is usually ready in well under a second: a spinner flashed for that moment makes the open
+        // feel slow, so show only the background for the first second
+        var showLoading by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            delay(1000)
+            showLoading = true
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(backgroundColor),
             contentAlignment = Alignment.Center
         ) {
-            Column(
+            if (showLoading) Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -146,7 +187,7 @@ fun LocalTerminalContent(
                     modifier = Modifier.size(28.dp)
                 )
                 Text(
-                    text = "Restoring active terminal sessions...",
+                    text = L.components.localTerminal.restoringActiveTerminalSessions,
                     color = Color.LightGray,
                     fontSize = 13.sp
                 )
@@ -228,6 +269,70 @@ fun LocalTerminalContent(
     var altState by remember { mutableStateOf(ModifierState.OFF) }
     var isTabsMenuExpanded by remember { mutableStateOf(false) }
     var sessionToClose by remember { mutableStateOf<LocalPtySession?>(null) }
+
+    // Termux's left drawer (sessions, KEYBOARD, NEW SESSION): the full terminal only, not a single custom session
+    val hasSessionsDrawer = customSession == null
+    val drawerState = rememberTerminalDrawerState()
+    // a Boolean, so the drawer's per-frame movement doesn't recompose the whole terminal
+    val isDrawerShown by remember(drawerState) { derivedStateOf { drawerState.isShown } }
+    LaunchedEffect(isVisible) { if (!isVisible) drawerState.snapClosed() }
+    androidx.activity.compose.BackHandler(enabled = isVisible && isDrawerShown) { drawerState.close() }
+    val sessionPillEnabled by authPreferences.terminalSessionPillEnabled
+        .collectAsState(initial = authPreferences.getTerminalSessionPillEnabledSync())
+    val drawerSwipeArea by authPreferences.terminalDrawerSwipeArea
+        .collectAsState(initial = authPreferences.getTerminalDrawerSwipeAreaSync())
+    val charBasedInput by authPreferences.terminalCharBasedInput
+        .collectAsState(initial = authPreferences.getTerminalCharBasedInputSync())
+    // the keyboard reads the input mode when it connects: reconnect it when the setting changes
+    LaunchedEffect(charBasedInput) {
+        val tv = currentTerminalView ?: return@LaunchedEffect
+        (tv.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).restartInput(tv)
+    }
+
+    // The extra-keys bar has a second page (swipe it sideways, like Termux): a normal text box, where any keyboard works
+    // fully (Bangla/Japanese keyboards' drafts, suggestions, voice typing, the keyboard's clipboard)
+    val toolbarPager = androidx.compose.foundation.pager.rememberPagerState(pageCount = { 2 })
+    var toolbarInput by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
+    val toolbarInputFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    // Like Termux: on Enter the typed text goes into the terminal's line as it is (not run, so it can still be edited
+    // there); Enter on an empty box sends Enter. A finished session closes, as Enter does in the terminal.
+    val sendToolbarInput: () -> Unit = {
+        val currentPty = customSession
+            ?: LocalTerminalManager.sessions.value.find { it.id == LocalTerminalManager.activeSessionId.value }
+            ?: activeSession
+        if (currentPty.isExited.value) {
+            if (customSession != null) onClose() else LocalTerminalManager.closeSession(currentPty.id)
+        } else {
+            currentPty.write(toolbarInput.text.ifEmpty { "\r" })
+        }
+        toolbarInput = androidx.compose.ui.text.input.TextFieldValue("")
+    }
+    // Like Termux: the box takes the typing when swiped to, the terminal again when swiped back
+    LaunchedEffect(toolbarPager) {
+        androidx.compose.runtime.snapshotFlow { toolbarPager.settledPage }
+            .drop(1)
+            .collect { page ->
+                if (page == 1) {
+                    currentTerminalView?.clearFocus()
+                    runCatching { toolbarInputFocus.requestFocus() }
+                } else {
+                    currentTerminalView?.requestFocus()
+                }
+            }
+    }
+
+    // The drawer's KEYBOARD: hide it if shown, else focus the terminal and show it (see showTerminalKeyboard)
+    val toggleKeyboard: () -> Unit = toggle@{
+        val tv = currentTerminalView ?: return@toggle
+        val imeShown = androidx.core.view.ViewCompat.getRootWindowInsets(tv)
+            ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()) == true
+        if (imeShown) {
+            val imm = tv.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.hideSoftInputFromWindow(tv.windowToken, 0)
+        } else {
+            showTerminalKeyboard(tv)
+        }
+    }
 
     var dragOffsetX by remember { mutableFloatStateOf(0f) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
@@ -377,7 +482,7 @@ fun LocalTerminalContent(
                                 ) {
                                     Icon(
                                         imageVector = if (isMaximized) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                        contentDescription = if (isMaximized) "Minimize / Restore" else "Maximize",
+                                        contentDescription = if (isMaximized) L.components.localTerminal.minimizeRestore else L.components.localTerminal.maximize,
                                         tint = Color.LightGray,
                                         modifier = Modifier.size(20.dp)
                                     )
@@ -392,7 +497,7 @@ fun LocalTerminalContent(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Refresh,
-                                        contentDescription = "Retry",
+                                        contentDescription = L.common.retry,
                                         tint = com.example.gemini.theme.AppColors.success,
                                         modifier = Modifier.size(18.dp)
                                     )
@@ -406,7 +511,7 @@ fun LocalTerminalContent(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Close,
-                                    contentDescription = "Close",
+                                    contentDescription = L.common.close,
                                     tint = Color.White,
                                     modifier = Modifier.size(18.dp)
                                 )
@@ -422,6 +527,12 @@ fun LocalTerminalContent(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    // swipe right from the left edge: the sessions drawer (before the padding: the real screen edge)
+                    .then(
+                        if (hasSessionsDrawer) {
+                            Modifier.terminalDrawerEdgeSwipe(drawerState, drawerSwipeArea, statusBarHeightPx.toFloat())
+                        } else Modifier
+                    )
                     .clipToBounds()
                     .background(backgroundColor)
                     .padding(horizontal = 4.dp)
@@ -465,12 +576,25 @@ fun LocalTerminalContent(
                                             return scale
                                         }
                                         override fun onSingleTapUp(e: MotionEvent) {
-                                            val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                                            this@apply.requestFocus()
-                                            imm.showSoftInput(this@apply, 0)
+                                            showTerminalKeyboard(this@apply)
+                                        }
+                                        // two quick taps never reach onSingleTapUp: show the keyboard anyway
+                                        override fun onDoubleTap(e: MotionEvent) {
+                                            showTerminalKeyboard(this@apply)
+                                        }
+                                        // the keyboard's clipboard / paste: one bracketed paste, not hundreds of keystrokes
+                                        override fun onPasteText(text: String): Boolean {
+                                            val targetPty = customSession
+                                                ?: LocalTerminalManager.sessions.value.find { it.terminalSession == currentSession }
+                                                ?: activeSession
+                                            targetPty.paste(text)
+                                            return true
                                         }
                                         override fun shouldBackButtonBeMappedToEscape(): Boolean = false
-                                        override fun shouldEnforceCharBasedInput(): Boolean = true
+                                        // Settings → Terminal → Character-based input: on = the keyboard sends key presses
+                                        // only (Android's TYPE_NULL, Termux's default); off = text mode, so the keyboard
+                                        // shows its toolbar and clipboard (autocorrect and suggestions stay off)
+                                        override fun shouldEnforceCharBasedInput(): Boolean = charBasedInput
                                         override fun shouldUseCtrlSpaceWorkaround(): Boolean = false
                                         override fun isTerminalViewSelected(): Boolean = true
                                         override fun copyModeChanged(copyMode: Boolean) {}
@@ -604,9 +728,22 @@ fun LocalTerminalContent(
                                 activeSession.terminalSession.emulator?.setCursorStyle()
                                 currentTerminalView = this
                                 if (showKeyboardOnOpen) post {
-                                    requestFocus()
-                                    val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                                    imm.showSoftInput(this, 0)
+                                    if (hasWindowFocus()) {
+                                        requestFocus()
+                                        val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                                        imm.showSoftInput(this, 0)
+                                    } else {
+                                        // A new window (the terminal's own app icon opens it in a dialog) gets the focus
+                                        // a moment after it shows, and the keyboard is refused until then: wait for it
+                                        val tv = this
+                                        viewTreeObserver.addOnWindowFocusChangeListener(object : android.view.ViewTreeObserver.OnWindowFocusChangeListener {
+                                            override fun onWindowFocusChanged(hasFocus: Boolean) {
+                                                if (!hasFocus) return
+                                                tv.viewTreeObserver.removeOnWindowFocusChangeListener(this)
+                                                tv.post { showTerminalKeyboard(tv) }
+                                            }
+                                        })
+                                    }
                                 }
                             }
                         },
@@ -653,84 +790,99 @@ fun LocalTerminalContent(
                 }
             }
 
-            // EXTRA-KEYS TOOLBAR (Physical visual click feedback, auto-repeat for arrows, one-shot/lock modifiers)
-            Column(
+            // EXTRA-KEYS TOOLBAR (Physical visual click feedback, auto-repeat for arrows, one-shot/lock modifiers).
+            // Swipe it sideways for a text box (like Termux), for keyboards that only work in a normal text field.
+            androidx.compose.foundation.pager.HorizontalPager(
+                state = toolbarPager,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 3.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                // ROW 1: ESC | / | - | HOME | ↑ | END | PGUP
-                Row(
+                    .padding(horizontal = 4.dp, vertical = 3.dp)
+                    .height(70.dp), // two rows of keys: 34dp + 2dp + 34dp
+                verticalAlignment = Alignment.Top
+            ) { page ->
+                if (page == 1) {
+                    TerminalTextInputBox(
+                        value = toolbarInput,
+                        onValueChange = { toolbarInput = it },
+                        focusRequester = toolbarInputFocus,
+                        onSend = sendToolbarInput
+                    )
+                } else Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    TermuxKey(label = "ESC", modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_ESCAPE, "\u001B")
+                    // ROW 1: ESC | / | - | HOME | ↑ | END | PGUP
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        ExtraKey(label = "ESC", modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_ESCAPE, "\u001B")
+                        }
+                        ExtraKey(label = "/", enableRepeat = true, modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_SLASH, "/")
+                        }
+                        ExtraKey(label = "-", enableRepeat = true, modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_MINUS, "-")
+                        }
+                        ExtraKey(label = "HOME", modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_MOVE_HOME, "\u0001")
+                        }
+                        ExtraKey(label = "↑", enableRepeat = true, modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_DPAD_UP, "\u001B[A")
+                        }
+                        ExtraKey(label = "END", modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_MOVE_END, "\u0005")
+                        }
+                        ExtraKey(label = L.components.localTerminal.pgup, enableRepeat = true, modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_PAGE_UP, "\u001B[5~")
+                        }
                     }
-                    TermuxKey(label = "/", enableRepeat = true, modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_SLASH, "/")
-                    }
-                    TermuxKey(label = "-", enableRepeat = true, modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_MINUS, "-")
-                    }
-                    TermuxKey(label = "HOME", modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_MOVE_HOME, "\u0001")
-                    }
-                    TermuxKey(label = "↑", enableRepeat = true, modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_DPAD_UP, "\u001B[A")
-                    }
-                    TermuxKey(label = "END", modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_MOVE_END, "\u0005")
-                    }
-                    TermuxKey(label = "PGUP", enableRepeat = true, modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_PAGE_UP, "\u001B[5~")
-                    }
-                }
 
-                // ROW 2: ↹ (TAB) | CTRL | ALT | ← | ↓ | → | PGDN
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    TermuxKey(label = "↹", enableRepeat = true, modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_TAB, "\t")
-                    }
-                    TermuxKey(
-                        label = "CTRL",
-                        isActive = ctrlState != ModifierState.OFF,
-                        isLocked = ctrlState == ModifierState.LOCKED,
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            ctrlState = if (ctrlState == ModifierState.OFF) ModifierState.ONE_SHOT else ModifierState.OFF
-                        },
-                        onLongClick = {
-                            ctrlState = if (ctrlState == ModifierState.LOCKED) ModifierState.OFF else ModifierState.LOCKED
+                    // ROW 2: ↹ (TAB) | CTRL | ALT | ← | ↓ | → | PGDN
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        ExtraKey(label = "↹", enableRepeat = true, modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_TAB, "\t")
                         }
-                    )
-                    TermuxKey(
-                        label = "ALT",
-                        isActive = altState != ModifierState.OFF,
-                        isLocked = altState == ModifierState.LOCKED,
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            altState = if (altState == ModifierState.OFF) ModifierState.ONE_SHOT else ModifierState.OFF
-                        },
-                        onLongClick = {
-                            altState = if (altState == ModifierState.LOCKED) ModifierState.OFF else ModifierState.LOCKED
+                        ExtraKey(
+                            label = L.components.localTerminal.ctrl,
+                            isActive = ctrlState != ModifierState.OFF,
+                            isLocked = ctrlState == ModifierState.LOCKED,
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                ctrlState = if (ctrlState == ModifierState.OFF) ModifierState.ONE_SHOT else ModifierState.OFF
+                            },
+                            onLongClick = {
+                                ctrlState = if (ctrlState == ModifierState.LOCKED) ModifierState.OFF else ModifierState.LOCKED
+                            }
+                        )
+                        ExtraKey(
+                            label = L.components.localTerminal.alt,
+                            isActive = altState != ModifierState.OFF,
+                            isLocked = altState == ModifierState.LOCKED,
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                altState = if (altState == ModifierState.OFF) ModifierState.ONE_SHOT else ModifierState.OFF
+                            },
+                            onLongClick = {
+                                altState = if (altState == ModifierState.LOCKED) ModifierState.OFF else ModifierState.LOCKED
+                            }
+                        )
+                        ExtraKey(label = "←", enableRepeat = true, modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_DPAD_LEFT, "\u001B[D")
                         }
-                    )
-                    TermuxKey(label = "←", enableRepeat = true, modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_DPAD_LEFT, "\u001B[D")
-                    }
-                    TermuxKey(label = "↓", enableRepeat = true, modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_DPAD_DOWN, "\u001B[B")
-                    }
-                    TermuxKey(label = "→", enableRepeat = true, modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_DPAD_RIGHT, "\u001B[C")
-                    }
-                    TermuxKey(label = "PGDN", enableRepeat = true, modifier = Modifier.weight(1f)) {
-                        sendKeyToTerminal(KeyEvent.KEYCODE_PAGE_DOWN, "\u001B[6~")
+                        ExtraKey(label = "↓", enableRepeat = true, modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_DPAD_DOWN, "\u001B[B")
+                        }
+                        ExtraKey(label = "→", enableRepeat = true, modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_DPAD_RIGHT, "\u001B[C")
+                        }
+                        ExtraKey(label = L.components.localTerminal.pgdn, enableRepeat = true, modifier = Modifier.weight(1f)) {
+                            sendKeyToTerminal(KeyEvent.KEYCODE_PAGE_DOWN, "\u001B[6~")
+                        }
                     }
                 }
             }
@@ -753,8 +905,8 @@ fun LocalTerminalContent(
             )
         }
 
-        // DRAGGABLE FLOATING TAB PILL (Move anywhere on screen)
-        if (showFloatingPill && customSession == null) {
+        // DRAGGABLE FLOATING TAB PILL (Move anywhere on screen); can be turned off in Settings → Terminal
+        if (showFloatingPill && sessionPillEnabled && customSession == null) {
             Surface(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -795,7 +947,7 @@ fun LocalTerminalContent(
                         )
                         Icon(
                             imageVector = Icons.Default.ArrowDropDown,
-                            contentDescription = "Switch Tab",
+                            contentDescription = L.components.localTerminal.switchTab,
                             tint = Color.LightGray,
                             modifier = Modifier.size(16.dp)
                         )
@@ -845,7 +997,7 @@ fun LocalTerminalContent(
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Close,
-                                                contentDescription = "Close Tab",
+                                                contentDescription = L.common.closeTab,
                                                 tint = Color.Gray,
                                                 modifier = Modifier.size(12.dp)
                                             )
@@ -873,7 +1025,7 @@ fun LocalTerminalContent(
                                     },
                                     onLongClick = {
                                         LocalTerminalManager.createNewSession(context, forceShell = "bash")
-                                        android.widget.Toast.makeText(context, "Created Bash session", android.widget.Toast.LENGTH_SHORT).show()
+                                        android.widget.Toast.makeText(context, L.components.localTerminal.createdBashSession, android.widget.Toast.LENGTH_SHORT).show()
                                         isTabsMenuExpanded = false
                                     }
                                 )
@@ -882,20 +1034,20 @@ fun LocalTerminalContent(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
                                     imageVector = Icons.Default.Add,
-                                    contentDescription = "New Tab",
+                                    contentDescription = L.components.localTerminal.newTab,
                                     tint = if (!isSyncingTmux) ClaudeTerracotta else Color.Gray,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column {
                                     Text(
-                                        text = "New Session",
+                                        text = L.components.localTerminal.newSession,
                                         color = if (!isSyncingTmux) ClaudeTerracotta else Color.Gray,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.SemiBold
                                     )
                                     Text(
-                                        text = "Long-press to force Bash shell",
+                                        text = L.components.localTerminal.longPressToForceBashShell,
                                         color = com.example.gemini.theme.AppColors.editorText.copy(alpha = 0.53f),
                                         fontSize = 10.sp
                                     )
@@ -924,7 +1076,7 @@ fun LocalTerminalContent(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = "Close",
+                        contentDescription = L.common.close,
                         tint = Color.White,
                         modifier = Modifier.size(14.dp)
                     )
@@ -933,6 +1085,25 @@ fun LocalTerminalContent(
         }
         }
 
+        // SESSIONS DRAWER (Termux's left drawer), above the terminal and the pill
+        if (hasSessionsDrawer) {
+            TerminalSessionsDrawer(
+                state = drawerState,
+                sessions = sessions,
+                activeSessionId = activeSession.id,
+                canCreateSession = !isSyncingTmux,
+                onSelectSession = { LocalTerminalManager.selectSession(it.id) },
+                onNewSession = { LocalTerminalManager.createNewSession(context) },
+                onNewBashSession = {
+                    LocalTerminalManager.createNewSession(context, forceShell = "bash")
+                    android.widget.Toast.makeText(context, L.components.localTerminal.createdBashSession, android.widget.Toast.LENGTH_SHORT).show()
+                },
+                onToggleKeyboard = toggleKeyboard,
+                onRenameSession = { sess, name -> LocalTerminalManager.renameSession(sess.id, name) },
+                onCloseSession = { sessionToClose = it },
+                onOpenSettings = onOpenSettings
+            )
+        }
 
         if (sessionToClose != null) {
             val targetSession = sessionToClose!!
@@ -959,7 +1130,7 @@ fun LocalTerminalContent(
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "Close Tab?",
+                            text = L.components.localTerminal.closeTab,
                             fontSize = 17.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = Color.White
@@ -968,7 +1139,7 @@ fun LocalTerminalContent(
                 },
                 text = {
                     Text(
-                        text = "Are you sure you want to close \"$sessTitle\"?\nAny process running in this session will be terminated.",
+                        text = L.components.localTerminal.areYouSureYouWantTo(sessTitle),
                         fontSize = 13.sp,
                         color = com.example.gemini.theme.AppColors.editorText,
                         lineHeight = 18.sp
@@ -985,7 +1156,7 @@ fun LocalTerminalContent(
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
                     ) {
-                        Text("Close Tab", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(L.common.closeTab, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     }
                 },
                 dismissButton = {
@@ -993,7 +1164,7 @@ fun LocalTerminalContent(
                         onClick = { sessionToClose = null },
                         shape = RoundedCornerShape(10.dp)
                     ) {
-                        Text("Cancel", color = Color.Gray, fontSize = 13.sp)
+                        Text(L.common.cancel, color = Color.Gray, fontSize = 13.sp)
                     }
                 }
             )
@@ -1002,7 +1173,7 @@ fun LocalTerminalContent(
 }
 
 @Composable
-private fun TermuxKey(
+private fun ExtraKey(
     label: String,
     isActive: Boolean = false,
     isLocked: Boolean = false,
@@ -1069,6 +1240,8 @@ private fun TermuxKey(
         isPressed -> Color.White
         isLocked -> Color.White
         isActive -> ClaudeTerracotta
+        // Termux: white keys on its black bar; a light terminal theme keeps the theme's text color
+        com.example.gemini.theme.AppColors.terminalBg.luminance() < 0.5f -> Color.White
         else -> com.example.gemini.theme.AppColors.editorText
     }
 
@@ -1096,9 +1269,11 @@ private fun TermuxKey(
             ) {
                 Text(
                     text = label,
-                    fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = if (isActive || isLocked || isPressed) FontWeight.Bold else FontWeight.SemiBold,
+                    // Termux's key text (Material button text): Roboto Medium 14sp, the same weight when active
+                    fontSize = 14.sp,
+                    fontFamily = FontFamily.SansSerif,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.0892857143.em,
                     color = textColor
                 )
                 if (isLocked) {
@@ -1110,6 +1285,68 @@ private fun TermuxKey(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * The extra-keys bar's second page (swipe it sideways, like Termux's text input page): a normal text box, so any
+ * keyboard works fully there: Bangla/Japanese keyboards' drafts show while typed, suggestions, voice typing, the
+ * keyboard's clipboard. Enter (or the button) hands the text to the terminal, see sendToolbarInput.
+ */
+@Composable
+private fun TerminalTextInputBox(
+    value: androidx.compose.ui.text.input.TextFieldValue,
+    onValueChange: (androidx.compose.ui.text.input.TextFieldValue) -> Unit,
+    focusRequester: androidx.compose.ui.focus.FocusRequester,
+    onSend: () -> Unit
+) {
+    val shape = RoundedCornerShape(8.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(shape)
+            .background(com.example.gemini.theme.AppColors.editorPanel)
+            .border(1.dp, com.example.gemini.theme.AppColors.editorText.copy(alpha = 0.18f), shape)
+            .padding(start = 12.dp, end = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            if (value.text.isEmpty()) {
+                Text(
+                    text = L.components.localTerminal.typeHereEnterPutsItIn,
+                    color = com.example.gemini.theme.AppColors.editorText.copy(alpha = 0.45f),
+                    fontSize = 13.sp,
+                    maxLines = 1
+                )
+            }
+            androidx.compose.foundation.text.BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 15.sp),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(ClaudeTerracotta),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Send
+                ),
+                // keyboards differ in which action their Enter key reports: all of them send
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                    onSend = { onSend() },
+                    onDone = { onSend() },
+                    onGo = { onSend() }
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester)
+            )
+        }
+        IconButton(onClick = onSend, modifier = Modifier.size(40.dp)) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardReturn,
+                contentDescription = L.components.localTerminal.putInTheTerminalEnter,
+                tint = ClaudeTerracotta,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
