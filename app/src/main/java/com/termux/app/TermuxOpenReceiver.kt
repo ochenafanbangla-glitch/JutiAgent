@@ -1,4 +1,4 @@
-package com.example.gemini.app
+package com.termux.app
 
 import android.content.BroadcastReceiver
 import android.content.Context
