@@ -55,15 +55,15 @@ private class AccountsAsk(val title: String, val text: String, val confirm: Stri
 fun AgyAccountsCard(
     entry: AgentStatusEntry?,
     auth: AgyHubClient.AgyAuthInfo,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Starts a fresh Antigravity sign-in through the bridge, even while the hub is stuck. */
+    onRequestSignIn: () -> Unit = {}
 ) {
     val state by AgyAccounts.state.collectAsState()
     val error by AgyAccounts.error.collectAsState()
     val busy by AgyAccounts.busy.collectAsState()
     val subtle = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
     var ask by remember { mutableStateOf<AccountsAsk?>(null) }
-    // Add account: once agy shows signed out, Google sign-in starts on its own
-    var signInWhenSignedOut by remember { mutableStateOf(false) }
 
     // the list follows the signed-in account (switches from here, the mini app, a terminal or a new sign-in)
     LaunchedEffect(auth.isLoggedIn, auth.email) {
@@ -73,12 +73,6 @@ fun AgyAccountsCard(
             AgyAccounts.saveCurrent { err ->
                 if (err == null) AppToastHelper.showToast(L.agents.agyAccountsUi.savedValue(auth.email.ifBlank { L.agents.agyAccountsUi.thisAccount }), ChatToastType.SUCCESS)
             }
-        }
-    }
-    LaunchedEffect(entry?.isSignedOut, signInWhenSignedOut) {
-        if (signInWhenSignedOut && entry?.isSignedOut == true) {
-            signInWhenSignedOut = false
-            entry.action?.onClick?.invoke()
         }
     }
 
@@ -117,7 +111,9 @@ fun AgyAccountsCard(
     fun addAccount() {
         val go = {
             withCurrentKept(L.common.signOut, { save, force, done -> AgyAccounts.clearForNewSignIn(save, force, done) }) {
-                signInWhenSignedOut = true
+                // the login is cleared: start the fresh Google sign-in at once, instead of waiting for the
+                // hub to report signed-out (a stuck hub never does)
+                onRequestSignIn()
                 AppToastHelper.showToast(L.agents.agyAccountsUi.signInWithTheOtherGoogle, ChatToastType.INFO)
             }
         }
@@ -141,7 +137,13 @@ fun AgyAccountsCard(
             when {
                 st == null && error != null -> {
                     Text(error.orEmpty(), fontSize = 12.5.sp, color = MaterialTheme.colorScheme.error)
-                    TextButton(onClick = { AgyAccounts.refresh() }) { Text(L.common.retry) }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        // the accounts list failed to load, but signing out and in again is the way out of a
+                        // stuck hub: keep Add account here instead of hiding it exactly when it is needed
+                        OutlinedButton(enabled = !busy, onClick = { addAccount() }) { Text(L.agents.agyAccountsUi.addAccount) }
+                        TextButton(onClick = { AgyAccounts.refresh() }) { Text(L.common.retry) }
+                    }
                 }
                 st == null -> Text(L.common.loading, fontSize = 12.5.sp, color = subtle)
                 !st.supported -> Text(
